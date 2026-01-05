@@ -1,0 +1,64 @@
+# Example configuration for Hospitality PMS Integration
+# Supports multiple PBX backends (Bicom, Zultys, etc.)
+
+server:
+  port: 8080
+
+database:
+  host: localhost
+  port: 5432
+  user: hospitality
+  password: ${DB_PASSWORD}
+  database: hospitality
+  ssl_mode: disable
+
+tenants:
+  # ==========================================================================
+  # Bicom PBXware Tenant (Asterisk-based with ARI)
+  # ==========================================================================
+  - id: hotel-alpha
+    name: "Hotel Alpha"
+    enabled: true
+    timezone: "America/New_York"
+    region: "us-east"
+    pms:
+      protocol: mitel
+      host: 10.0.1.50
+      port: 23
+    pbx:
+      type: bicom  # Optional, this is the default
+      # ARI settings for real-time call control
+      ari_url: "http://pbx.alpha.local:8088/ari"
+      ari_ws_url: "ws://pbx.alpha.local:8088/ari/events"
+      ari_user: "hotel-alpha"
+      ari_pass: "${HOTEL_ALPHA_ARI_SECRET}"
+      app_name: "hospitality-alpha"
+      # Bicom REST API for extension/voicemail management
+      api_url: "https://pbx.alpha.local"
+      api_key: "${HOTEL_ALPHA_API_KEY}"
+      tenant_id: "1"
+    room_prefix: "1"
+
+  # ==========================================================================
+  # Zultys MX Tenant (Webhook-based with session auth)
+  # ==========================================================================
+  - id: hotel-zultys
+    name: "Hotel Zultys"
+    enabled: true
+    timezone: "America/Los_Angeles"
+    region: "us-west"
+    pms:
+      protocol: fias
+      host: 10.0.3.50
+      port: 3722
+    pbx:
+      type: zultys
+      # Zultys REST API (session-based auth)
+      api_url: "https://zultys.hotel.com/api"
+      auth_url: "/auth/login"
+      username: "${ZULTYS_USERNAME}"
+      password: "${ZULTYS_PASSWORD}"
+      # Inbound webhook validation secret
+      webhook_secret: "${ZULTYS_WEBHOOK_SECRET}"
+    room_prefix: "3"
+    # Note: Wake-up calls not supported on Zultys (requires external scheduler)
