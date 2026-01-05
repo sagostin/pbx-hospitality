@@ -10,10 +10,10 @@ import (
 	"github.com/prometheus/client_golang/prometheus/promhttp"
 	"github.com/rs/zerolog/log"
 
-	"github.com/topsoffice/bicom-hospitality/internal/config"
-	"github.com/topsoffice/bicom-hospitality/internal/db"
-	"github.com/topsoffice/bicom-hospitality/internal/pbx"
-	"github.com/topsoffice/bicom-hospitality/internal/tenant"
+	"github.com/sagostin/pbx-hospitality/internal/config"
+	"github.com/sagostin/pbx-hospitality/internal/db"
+	"github.com/sagostin/pbx-hospitality/internal/pbx"
+	"github.com/sagostin/pbx-hospitality/internal/tenant"
 )
 
 // Server holds API dependencies

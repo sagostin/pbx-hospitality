@@ -8,7 +8,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/topsoffice/bicom-hospitality/internal/pms"
+	"github.com/sagostin/pbx-hospitality/internal/pms"
 )
 
 func TestNewAdapter(t *testing.T) {

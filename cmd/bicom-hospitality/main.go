@@ -12,10 +12,10 @@ import (
 	"github.com/rs/zerolog"
 	"github.com/rs/zerolog/log"
 
-	"github.com/topsoffice/bicom-hospitality/internal/api"
-	"github.com/topsoffice/bicom-hospitality/internal/config"
-	"github.com/topsoffice/bicom-hospitality/internal/db"
-	"github.com/topsoffice/bicom-hospitality/internal/tenant"
+	"github.com/sagostin/pbx-hospitality/internal/api"
+	"github.com/sagostin/pbx-hospitality/internal/config"
+	"github.com/sagostin/pbx-hospitality/internal/db"
+	"github.com/sagostin/pbx-hospitality/internal/tenant"
 )
 
 func main() {

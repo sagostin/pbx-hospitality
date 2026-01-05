@@ -18,7 +18,7 @@ import (
 
 	"github.com/rs/zerolog/log"
 
-	"github.com/topsoffice/bicom-hospitality/internal/pbx"
+	"github.com/sagostin/pbx-hospitality/internal/pbx"
 )
 
 // ErrWakeUpNotSupported is returned when wake-up calls are attempted on Zultys

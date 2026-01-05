@@ -12,7 +12,7 @@ import (
 
 	"github.com/rs/zerolog/log"
 
-	"github.com/topsoffice/bicom-hospitality/internal/pms"
+	"github.com/sagostin/pbx-hospitality/internal/pms"
 )
 
 const (

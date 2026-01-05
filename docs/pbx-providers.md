@@ -187,7 +187,7 @@ internal/pbx/freeswitch/
 ```go
 package freeswitch
 
-import "github.com/topsoffice/bicom-hospitality/internal/pbx"
+import "github.com/sagostin/pbx-hospitality/internal/pbx"
 
 type Provider struct {
     // provider fields
@@ -223,7 +223,7 @@ func init() {
 ```go
 // internal/tenant/manager.go
 import (
-    _ "github.com/topsoffice/bicom-hospitality/internal/pbx/freeswitch"
+    _ "github.com/sagostin/pbx-hospitality/internal/pbx/freeswitch"
 )
 ```
 

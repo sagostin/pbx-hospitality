@@ -18,7 +18,7 @@ This guide covers deploying the Hospitality PMS Integration service in productio
 ### 1. Clone and Configure
 
 ```bash
-git clone https://github.com/topsoffice/bicom-hospitality.git
+git clone https://github.com/sagostin/pbx-hospitality.git
 cd bicom-hospitality
 cp config/example.yaml config/config.yaml
 ```

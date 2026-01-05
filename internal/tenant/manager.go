@@ -11,11 +11,11 @@ import (
 	"github.com/rs/zerolog"
 	"github.com/rs/zerolog/log"
 
-	"github.com/topsoffice/bicom-hospitality/internal/config"
-	"github.com/topsoffice/bicom-hospitality/internal/metrics"
-	"github.com/topsoffice/bicom-hospitality/internal/pbx"
-	_ "github.com/topsoffice/bicom-hospitality/internal/pbx/bicom" // Register Bicom provider
-	"github.com/topsoffice/bicom-hospitality/internal/pms"
+	"github.com/sagostin/pbx-hospitality/internal/config"
+	"github.com/sagostin/pbx-hospitality/internal/metrics"
+	"github.com/sagostin/pbx-hospitality/internal/pbx"
+	_ "github.com/sagostin/pbx-hospitality/internal/pbx/bicom" // Register Bicom provider
+	"github.com/sagostin/pbx-hospitality/internal/pms"
 )
 
 // Manager manages all tenant instances

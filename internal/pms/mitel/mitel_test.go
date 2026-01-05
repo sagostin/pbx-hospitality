@@ -3,7 +3,7 @@ package mitel
 import (
 	"testing"
 
-	"github.com/topsoffice/bicom-hospitality/internal/pms"
+	"github.com/sagostin/pbx-hospitality/internal/pms"
 )
 
 func TestParseMessage(t *testing.T) {

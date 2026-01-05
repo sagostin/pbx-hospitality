@@ -12,8 +12,8 @@ import (
 	"github.com/CyCoreSystems/ari/v6/client/native"
 	"github.com/rs/zerolog/log"
 
-	"github.com/topsoffice/bicom-hospitality/internal/bicom"
-	"github.com/topsoffice/bicom-hospitality/internal/pbx"
+	"github.com/sagostin/pbx-hospitality/internal/bicom"
+	"github.com/sagostin/pbx-hospitality/internal/pbx"
 )
 
 func init() {

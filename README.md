@@ -47,7 +47,7 @@ This service connects hotel Property Management Systems (PMS) to PBX systems, en
 ### Installation
 
 ```bash
-git clone https://github.com/topsoffice/bicom-hospitality.git
+git clone https://github.com/sagostin/pbx-hospitality.git
 cd bicom-hospitality
 go mod download
 go build ./cmd/bicom-hospitality
