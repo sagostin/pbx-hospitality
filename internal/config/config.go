@@ -17,7 +17,8 @@ type Config struct {
 
 // ServerConfig holds HTTP server settings
 type ServerConfig struct {
-	Port int `yaml:"port"`
+	Port        int    `yaml:"port"`
+	AdminAPIKey string `yaml:"admin_api_key"`
 }
 
 // DatabaseConfig holds PostgreSQL connection settings

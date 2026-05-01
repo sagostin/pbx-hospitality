@@ -128,6 +128,40 @@ func (db *DB) ListTenants(ctx context.Context) ([]Tenant, error) {
 	return tenants, nil
 }
 
+// CreateTenant creates a new tenant
+func (db *DB) CreateTenant(ctx context.Context, t *Tenant) error {
+	_, err := db.pool.Exec(ctx, `
+		INSERT INTO tenants (id, name, pms_config, pbx_config, settings, enabled)
+		VALUES ($1, $2, $3, $4, $5, $6)
+	`, t.ID, t.Name, t.PMSConfig, t.PBXConfig, t.Settings, t.Enabled)
+	if err != nil {
+		return fmt.Errorf("creating tenant: %w", err)
+	}
+	return nil
+}
+
+// UpdateTenant updates an existing tenant
+func (db *DB) UpdateTenant(ctx context.Context, t *Tenant) error {
+	_, err := db.pool.Exec(ctx, `
+		UPDATE tenants
+		SET name = $2, pms_config = $3, pbx_config = $4, settings = $5, enabled = $6, updated_at = NOW()
+		WHERE id = $1
+	`, t.ID, t.Name, t.PMSConfig, t.PBXConfig, t.Settings, t.Enabled)
+	if err != nil {
+		return fmt.Errorf("updating tenant: %w", err)
+	}
+	return nil
+}
+
+// DeleteTenant deletes a tenant by ID
+func (db *DB) DeleteTenant(ctx context.Context, id string) error {
+	_, err := db.pool.Exec(ctx, `DELETE FROM tenants WHERE id = $1`, id)
+	if err != nil {
+		return fmt.Errorf("deleting tenant: %w", err)
+	}
+	return nil
+}
+
 // =============================================================================
 // Room Mapping Repository
 // =============================================================================

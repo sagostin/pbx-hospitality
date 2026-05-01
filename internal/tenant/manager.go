@@ -199,9 +199,9 @@ func (m *Manager) List() []string {
 	return ids
 }
 
-// ReloadFromDB reloads tenants from the database
-// - Stops tenants that were removed from DB
-// - Starts new tenants added to DB
+// Reload updates tenant configurations without full restart
+// - Stops tenants that were removed from config
+// - Starts new tenants added to config
 // - Updates settings for existing tenants (reconnects if needed)
 func (m *Manager) ReloadFromDB(ctx context.Context) error {
 	if m.database == nil {
@@ -277,6 +277,41 @@ func (m *Manager) ReloadFromDB(ctx context.Context) error {
 		}
 	}
 
+	return nil
+}
+
+// InvalidateCache stops a tenant and removes it from the in-memory cache.
+// Call this after deleting a tenant from the database to ensure the in-memory
+// state is consistent.
+func (m *Manager) InvalidateCache(tenantID string) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+
+	if t, ok := m.tenants[tenantID]; ok {
+		log.Info().Str("tenant", tenantID).Msg("Invalidating tenant from cache")
+		t.Stop()
+		delete(m.tenants, tenantID)
+	}
+}
+
+// UpdateTenantRuntime updates an existing tenant's runtime state (config + reconnect).
+// Call this after updating a tenant in the database.
+func (m *Manager) UpdateTenantRuntime(tc config.TenantConfig) error {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+
+	ctx := context.Background()
+	if existing, ok := m.tenants[tc.ID]; ok {
+		existing.Stop()
+		newTenant, err := NewTenant(tc, m.database)
+		if err != nil {
+			return fmt.Errorf("recreating tenant: %w", err)
+		}
+		if err := newTenant.Start(ctx); err != nil {
+			return fmt.Errorf("starting tenant: %w", err)
+		}
+		m.tenants[tc.ID] = newTenant
+	}
 	return nil
 }
 
