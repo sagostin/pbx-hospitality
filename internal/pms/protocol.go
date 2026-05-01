@@ -107,3 +107,48 @@ type ProtocolError struct {
 func (e *ProtocolError) Error() string {
 	return e.Protocol + ": " + e.Message
 }
+
+// ListenerConfig holds configuration for socket-binding mode
+type ListenerConfig struct {
+	ListenHost string
+	ListenPort int
+	AllowedPMSIPs []string // If non-empty, only connections from these IPs are allowed
+}
+
+// Listener is the interface for socket-binding PMS listeners
+type Listener interface {
+	// Listen starts the TCP server and returns a channel of PMS events
+	Listen(ctx context.Context) error
+
+	// Events returns the channel of parsed PMS events
+	Events() <-chan Event
+
+	// Close stops the listener
+	Close() error
+
+	// Host returns the listen address
+	Host() string
+
+	// Port returns the listen port
+	Port() int
+}
+
+// ListenerFactory creates a PMS listener from configuration
+type ListenerFactory func(cfg ListenerConfig, events chan Event) (Listener, error)
+
+// ListenerRegistry holds available protocol listeners
+var ListenerRegistry = make(map[string]ListenerFactory)
+
+// RegisterListener adds a protocol listener factory to the registry
+func RegisterListener(protocol string, factory ListenerFactory) {
+	ListenerRegistry[protocol] = factory
+}
+
+// NewListener creates a PMS listener based on protocol name
+func NewListener(protocol string, cfg ListenerConfig, events chan Event) (Listener, error) {
+	factory, ok := ListenerRegistry[protocol]
+	if !ok {
+		return nil, &ProtocolError{Protocol: protocol, Message: "unsupported protocol or listener not available"}
+	}
+	return factory(cfg, events)
+}

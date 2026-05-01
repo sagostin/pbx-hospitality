@@ -58,6 +58,14 @@ type PMSConfig struct {
 	PathPrefix string `yaml:"path_prefix,omitempty"`
 	// AuthToken is the bearer token for TigerTMS authentication
 	AuthToken string `yaml:"auth_token,omitempty"`
+
+	// Socket-binding mode: the integration service binds a local TCP socket
+	// and the PMS connects to this socket. Use ListenHost/ListenPort instead
+	// of Host/Port. If AllowedPMSIPs is non-empty, only connections from
+	// these IPs will be accepted.
+	ListenHost      string   `yaml:"listen_host,omitempty"`
+	ListenPort      int      `yaml:"listen_port,omitempty"`
+	AllowedPMSIPs   []string `yaml:"allowed_pms_ips,omitempty"`
 }
 
 // PBXConfig holds PBX provider settings
