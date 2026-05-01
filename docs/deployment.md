@@ -188,6 +188,37 @@ See [PBX Providers Guide](pbx-providers.md) for complete Zultys documentation.
 
 ## Monitoring
 
+### Health Endpoint
+
+The `/health` endpoint returns JSON with overall service and per-tenant connector status:
+
+```bash
+curl http://localhost:8080/health
+```
+
+Response:
+```json
+{
+  "status": "ok",
+  "timestamp": "2026-05-01T15:30:00Z",
+  "database": "connected",
+  "tenants": {
+    "hotel-alpha": {
+      "name": "Hotel Alpha",
+      "pms_connected": true,
+      "pbx_connected": true,
+      "cloud_connected": true,
+      "queue_depth": 0,
+      "reconnect_count": 2
+    }
+  }
+}
+```
+
+- `status`: `"ok"` if all tenants healthy, `"degraded"` if any connection is down
+- `database`: `"connected"` if DB is reachable, `"not configured"` if no DB, `"error"` if unreachable
+- Per-tenant: `pms_connected`, `pbx_connected`, `cloud_connected` (PBX connection), `reconnect_count`
+
 ### Prometheus Metrics
 
 Add to your `prometheus.yml`:
@@ -201,15 +232,80 @@ scrape_configs:
 
 ### Key Metrics
 
-| Metric | Alert Threshold |
-|--------|-----------------|
-| `hospitality_pms_connection_status` | `== 0` for > 5m |
-| `hospitality_pbx_connection_status` | `== 0` for > 5m |
-| `hospitality_pms_event_errors_total` | Rate > 10/min |
+| Metric | Type | Labels | Description |
+|--------|------|--------|-------------|
+| `hospitality_connector_status` | Gauge | `connector_id` | Connector health (1=healthy, 0=unhealthy) |
+| `hospitality_connector_cloud_connected` | Gauge | `connector_id` | Cloud WebSocket status (1=connected, 0=disconnected) |
+| `hospitality_connector_queue_depth` | Gauge | `connector_id` | Pending events in queue |
+| `hospitality_connector_events_total` | Counter | `connector_id`, `event_type` | Total connector events by type |
+| `hospitality_connector_reconnect_total` | Counter | `connector_id`, `target` | Reconnection attempts |
+| `hospitality_pms_connection_status` | Gauge | `tenant`, `protocol` | PMS connection status |
+| `hospitality_pbx_connection_status` | Gauge | `tenant` | ARI/PBX connection status |
+| `hospitality_pms_events_total` | Counter | `tenant`, `type` | PMS events received |
+| `hospitality_pms_event_errors_total` | Counter | `tenant`, `type`, `error` | PMS event processing errors |
+
+### Prometheus Alert Rules
+
+```yaml
+groups:
+  - name: hospitality
+    rules:
+      - alert: ConnectorUnhealthy
+        expr: hospitality_connector_status{connector_id=~".+"} == 0
+        for: 1m
+        labels:
+          severity: critical
+        annotations:
+          summary: "Site connector {{ $labels.connector_id }} is unhealthy"
+
+      - alert: CloudDisconnected
+        expr: hospitality_connector_cloud_connected{connector_id=~".+"} == 0
+        for: 5m
+        labels:
+          severity: warning
+        annotations:
+          summary: "Cloud WebSocket disconnected for {{ $labels.connector_id }}"
+
+      - alert: HighQueueDepth
+        expr: hospitality_connector_queue_depth{connector_id=~".+"} > 100
+        for: 5m
+        labels:
+          severity: warning
+        annotations:
+          summary: "High event queue depth for {{ $labels.connector_id }}"
+
+      - alert: PMSConnectionDown
+        expr: hospitality_pms_connection_status{tenant=~".+"} == 0
+        for: 5m
+        labels:
+          severity: critical
+        annotations:
+          summary: "PMS connection down for {{ $labels.tenant }}"
+```
 
 ### Grafana Dashboard
 
 Import example dashboard from `docs/grafana-dashboard.json` (if available).
+
+### Health Check CLI
+
+The service supports a health check command for Docker `HEALTHCHECK`:
+
+```bash
+# Inside container
+/app/bicom-hospitality --health-check
+```
+
+Dockerfile example:
+```dockerfile
+HEALTHCHECK --interval=30s --timeout=10s --start-period=5s --retries=3 \
+  CMD ["/app/bicom-hospitality", "--health-check"]
+```
+
+The health check validates:
+1. Database connectivity (if configured)
+2. Tenant manager initialization
+3. All tenant connections (PMS + PBX)
 
 ---
 
@@ -236,6 +332,29 @@ Set via environment:
 
 ```bash
 LOG_LEVEL=debug  # debug, info, warn, error
+```
+
+### File Logging
+
+To enable structured JSON logging to a file (recommended for Docker deployments):
+
+```bash
+LOG_DIR=/var/log/hospitality
+```
+
+This writes logs to `/var/log/hospitality/hospitality.log` with rotation handled externally (e.g., Docker log driver or logrotate).
+
+Docker Compose example:
+```yaml
+services:
+  hospitality:
+    environment:
+      - LOG_DIR=/var/log/hospitality
+    volumes:
+      - hospitality-logs:/var/log/hospitality
+
+volumes:
+  hospitality-logs:
 ```
 
 ---

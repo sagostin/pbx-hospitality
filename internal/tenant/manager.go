@@ -168,16 +168,17 @@ func (m *Manager) Reload(newCfg *config.Config) error {
 
 // Tenant represents a single hotel/property integration
 type Tenant struct {
-	ID          string
-	Name        string
-	cfg         config.TenantConfig
-	database    *db.DB
+	ID           string
+	Name         string
+	cfg          config.TenantConfig
+	database     *db.DB
 	pmsAdapter  pms.Adapter
 	pbxProvider pbx.Provider // PBX provider (Bicom, FreeSWITCH, etc.)
 	mapper      *RoomMapper
 	timezone    *time.Location // Tenant's configured timezone
 	cancel      context.CancelFunc
-	wg          sync.WaitGroup
+	wg           sync.WaitGroup
+	reconnects   int // Number of reconnection attempts
 }
 
 // NewTenant creates a new tenant instance
@@ -264,6 +265,10 @@ func (t *Tenant) Start(ctx context.Context) error {
 		Str("pbx_type", pbxType).
 		Msg("PBX provider initialized")
 
+	// Set connector metrics to healthy
+	metrics.ConnectorStatus.WithLabelValues(t.ID).Set(1)
+	metrics.ConnectorCloudConnected.WithLabelValues(t.ID).Set(1)
+
 	// Start event processing loop
 	t.wg.Add(1)
 	go t.processEvents(ctx)
@@ -284,6 +289,10 @@ func (t *Tenant) Stop() {
 	if t.pbxProvider != nil {
 		t.pbxProvider.Close()
 	}
+
+	// Set connector metrics to unhealthy
+	metrics.ConnectorStatus.WithLabelValues(t.ID).Set(0)
+	metrics.ConnectorCloudConnected.WithLabelValues(t.ID).Set(0)
 
 	t.wg.Wait()
 }
@@ -552,17 +561,19 @@ func (t *Tenant) PBXProvider() pbx.Provider {
 // Status returns the tenant's current status
 func (t *Tenant) Status() TenantStatus {
 	return TenantStatus{
-		ID:           t.ID,
-		Name:         t.Name,
-		PMSConnected: t.pmsAdapter != nil && t.pmsAdapter.Connected(),
-		PBXConnected: t.pbxProvider != nil && t.pbxProvider.Connected(),
+		ID:              t.ID,
+		Name:            t.Name,
+		PMSConnected:    t.pmsAdapter != nil && t.pmsAdapter.Connected(),
+		PBXConnected:    t.pbxProvider != nil && t.pbxProvider.Connected(),
+		ReconnectCount:  t.reconnects,
 	}
 }
 
 // TenantStatus represents the current state of a tenant
 type TenantStatus struct {
-	ID           string `json:"id"`
-	Name         string `json:"name"`
-	PMSConnected bool   `json:"pms_connected"`
-	PBXConnected bool   `json:"pbx_connected"`
+	ID              string `json:"id"`
+	Name            string `json:"name"`
+	PMSConnected   bool   `json:"pms_connected"`
+	PBXConnected    bool   `json:"pbx_connected"`
+	ReconnectCount  int    `json:"reconnect_count"`
 }
