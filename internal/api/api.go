@@ -59,7 +59,9 @@ func NewRouterWithDB(tm *tenant.Manager, cfg *config.Config, database *db.DB) ht
 
 			// Guest sessions (requires DB)
 			r.Get("/{id}/sessions", s.listActiveSessions)
+			r.Post("/{id}/sessions", s.createSession)
 			r.Get("/{id}/sessions/{room}", s.getSession)
+			r.Delete("/{id}/sessions/{room}", s.endSession)
 
 			// PMS event history (requires DB)
 			r.Get("/{id}/events", s.listEvents)
@@ -220,9 +222,15 @@ func (s *Server) listActiveSessions(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	// For now, return a placeholder - would need a ListActiveSessions method
+	sessions, err := s.db.ListActiveSessions(r.Context(), id)
+	if err != nil {
+		log.Error().Err(err).Str("tenant", id).Msg("Failed to list active sessions")
+		http.Error(w, "internal error", http.StatusInternalServerError)
+		return
+	}
+
 	w.Header().Set("Content-Type", "application/json")
-	json.NewEncoder(w).Encode([]interface{}{})
+	json.NewEncoder(w).Encode(sessions)
 }
 
 func (s *Server) getSession(w http.ResponseWriter, r *http.Request) {
@@ -253,6 +261,80 @@ func (s *Server) getSession(w http.ResponseWriter, r *http.Request) {
 
 	w.Header().Set("Content-Type", "application/json")
 	json.NewEncoder(w).Encode(session)
+}
+
+type createSessionRequest struct {
+	RoomNumber    string                 `json:"room_number"`
+	Extension    string                 `json:"extension"`
+	GuestName    string                 `json:"guest_name"`
+	ReservationID string                `json:"reservation_id"`
+	Metadata     map[string]interface{} `json:"metadata"`
+}
+
+func (s *Server) createSession(w http.ResponseWriter, r *http.Request) {
+	id := chi.URLParam(r, "id")
+	if _, ok := s.tm.Get(id); !ok {
+		http.Error(w, "tenant not found", http.StatusNotFound)
+		return
+	}
+
+	if s.db == nil {
+		http.Error(w, "database not configured", http.StatusServiceUnavailable)
+		return
+	}
+
+	var req createSessionRequest
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		http.Error(w, "invalid request body", http.StatusBadRequest)
+		return
+	}
+
+	if req.RoomNumber == "" || req.GuestName == "" {
+		http.Error(w, "room_number and guest_name required", http.StatusBadRequest)
+		return
+	}
+
+	sessionID, err := s.db.CreateGuestSession(r.Context(), id, req.RoomNumber, req.Extension, req.GuestName, req.ReservationID, req.Metadata)
+	if err != nil {
+		log.Error().Err(err).Str("tenant", id).Msg("Failed to create session")
+		http.Error(w, "internal error", http.StatusInternalServerError)
+		return
+	}
+
+	w.WriteHeader(http.StatusCreated)
+	w.Header().Set("Content-Type", "application/json")
+	json.NewEncoder(w).Encode(map[string]interface{}{
+		"id":          sessionID,
+		"room_number": req.RoomNumber,
+		"guest_name":  req.GuestName,
+	})
+}
+
+func (s *Server) endSession(w http.ResponseWriter, r *http.Request) {
+	id := chi.URLParam(r, "id")
+	room := chi.URLParam(r, "room")
+
+	if _, ok := s.tm.Get(id); !ok {
+		http.Error(w, "tenant not found", http.StatusNotFound)
+		return
+	}
+
+	if s.db == nil {
+		http.Error(w, "database not configured", http.StatusServiceUnavailable)
+		return
+	}
+
+	if err := s.db.EndGuestSession(r.Context(), id, room); err != nil {
+		log.Error().Err(err).Str("tenant", id).Str("room", room).Msg("Failed to end session")
+		http.Error(w, "internal error", http.StatusInternalServerError)
+		return
+	}
+
+	w.Header().Set("Content-Type", "application/json")
+	json.NewEncoder(w).Encode(map[string]string{
+		"status": "ended",
+		"room":   room,
+	})
 }
 
 // =============================================================================

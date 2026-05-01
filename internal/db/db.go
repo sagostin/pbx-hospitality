@@ -244,7 +244,7 @@ func (db *DB) GetActiveSession(ctx context.Context, tenantID, roomNumber string)
 	var gs GuestSession
 	err := db.pool.QueryRow(ctx, `
 		SELECT id, tenant_id, room_number, extension, guest_name, reservation_id, check_in, check_out, metadata
-		FROM guest_sessions 
+		FROM guest_sessions
 		WHERE tenant_id = $1 AND room_number = $2 AND check_out IS NULL
 		ORDER BY check_in DESC LIMIT 1
 	`, tenantID, roomNumber).Scan(
@@ -259,6 +259,30 @@ func (db *DB) GetActiveSession(ctx context.Context, tenantID, roomNumber string)
 		return nil, fmt.Errorf("querying active session: %w", err)
 	}
 	return &gs, nil
+}
+
+// ListActiveSessions returns all active sessions for a tenant
+func (db *DB) ListActiveSessions(ctx context.Context, tenantID string) ([]GuestSession, error) {
+	rows, err := db.pool.Query(ctx, `
+		SELECT id, tenant_id, room_number, extension, guest_name, reservation_id, check_in, check_out, metadata
+		FROM guest_sessions
+		WHERE tenant_id = $1 AND check_out IS NULL
+		ORDER BY room_number, check_in DESC
+	`, tenantID)
+	if err != nil {
+		return nil, fmt.Errorf("querying active sessions: %w", err)
+	}
+	defer rows.Close()
+
+	var sessions []GuestSession
+	for rows.Next() {
+		var gs GuestSession
+		if err := rows.Scan(&gs.ID, &gs.TenantID, &gs.RoomNumber, &gs.Extension, &gs.GuestName, &gs.ReservationID, &gs.CheckIn, &gs.CheckOut, &gs.Metadata); err != nil {
+			return nil, fmt.Errorf("scanning active session: %w", err)
+		}
+		sessions = append(sessions, gs)
+	}
+	return sessions, nil
 }
 
 // =============================================================================
