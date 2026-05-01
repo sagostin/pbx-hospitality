@@ -327,7 +327,7 @@ func (a *Adapter) handleConnection(ctx context.Context, conn net.Conn) {
 		// Parse the record
 		evt, err := parseRecord(line)
 		if err != nil {
-			if err == errLinkRecord {
+			if err == ErrLinkRecord {
 				connLinkedRecords = a.handleLinkRecordForConn(line, conn, connLinkedRecords)
 				continue
 			}
@@ -483,7 +483,7 @@ func (a *Adapter) readLoop(ctx context.Context, conn net.Conn) {
 		// Parse the record
 		evt, err := parseRecord(line)
 		if err != nil {
-			if err == errLinkRecord {
+			if err == ErrLinkRecord {
 				// Handle special records
 				a.handleLinkRecord(line, conn)
 				continue
@@ -538,7 +538,9 @@ func (a *Adapter) handleLinkRecord(line string, conn net.Conn) {
 	}
 }
 
-var errLinkRecord = fmt.Errorf("link record")
+// ErrLinkRecord is returned when a link record (LR/LS/LA/LE) is parsed.
+// These records are handled specially by the protocol and not emitted as events.
+var ErrLinkRecord = fmt.Errorf("link record")
 
 // parseRecord parses a FIAS record
 // Format: <RECORD_TYPE>|<FIELD>=<VALUE>|<FIELD>=<VALUE>|...|
@@ -553,7 +555,7 @@ func parseRecord(line string) (pms.Event, error) {
 	// Handle link/keepalive records separately
 	switch recordType {
 	case RecordLinkRecord, RecordLinkStart, RecordLinkAlive, RecordLinkEnd:
-		return pms.Event{}, errLinkRecord
+		return pms.Event{}, ErrLinkRecord
 	}
 
 	// Parse fields into map
