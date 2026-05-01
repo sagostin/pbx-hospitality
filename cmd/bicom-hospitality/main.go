@@ -2,10 +2,12 @@ package main
 
 import (
 	"context"
+	"flag"
 	"fmt"
 	"net/http"
 	"os"
 	"os/signal"
+	"path/filepath"
 	"syscall"
 	"time"
 
@@ -19,9 +21,33 @@ import (
 )
 
 func main() {
+	// Parse command-line flags
+	healthCheck := flag.Bool("health-check", false, "Run health check and exit (for Docker HEALTHCHECK)")
+	flag.Parse()
+
 	// Configure zerolog
 	zerolog.TimeFieldFormat = zerolog.TimeFormatUnix
-	log.Logger = log.Output(zerolog.ConsoleWriter{Out: os.Stderr, TimeFormat: time.RFC3339})
+
+	// Configure logging output
+	logDir := os.Getenv("LOG_DIR")
+	if logDir != "" {
+		// Ensure log directory exists
+		if err := os.MkdirAll(logDir, 0755); err != nil {
+			log.Fatal().Err(err).Str("log_dir", logDir).Msg("Failed to create log directory")
+		}
+		// Open log file with rotation
+		logFile := filepath.Join(logDir, "hospitality.log")
+		f, err := os.OpenFile(logFile, os.O_CREATE|os.O_APPEND|os.O_WRONLY, 0644)
+		if err != nil {
+			log.Fatal().Err(err).Str("log_file", logFile).Msg("Failed to open log file")
+		}
+		defer f.Close()
+		// Write JSON logs to file; console writer to stderr
+		log.Logger = zerolog.New(f).With().Timestamp().Logger()
+	} else {
+		// Default: console output to stderr
+		log.Logger = log.Output(zerolog.ConsoleWriter{Out: os.Stderr, TimeFormat: time.RFC3339})
+	}
 
 	log.Info().Msg("Starting Bicom Hospitality PMS Integration")
 
@@ -31,6 +57,12 @@ func main() {
 		log.Fatal().Err(err).Msg("Failed to load configuration")
 	}
 
+	// If running health check, validate and exit
+	if *healthCheck {
+		os.Exit(runHealthCheck(cfg))
+	}
+
+	// Initialize context for main operation
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
 
@@ -111,6 +143,58 @@ func main() {
 	tm.StopAll()
 
 	log.Info().Msg("Shutdown complete")
+}
+
+// runHealthCheck validates the service health for Docker HEALTHCHECK
+// Returns exit code 0 (healthy) or 1 (degraded)
+func runHealthCheck(cfg *config.Config) int {
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+
+	// Initialize database (optional)
+	var database *db.DB
+	var dbErr error
+	if cfg.Database.Host != "" {
+		database, dbErr = db.New(ctx, db.Config{
+			Host:     cfg.Database.Host,
+			Port:     cfg.Database.Port,
+			User:     cfg.Database.User,
+			Password: cfg.Database.Password,
+			Database: cfg.Database.Database,
+			SSLMode:  cfg.Database.SSLMode,
+		})
+		if dbErr != nil {
+			log.Error().Err(dbErr).Msg("Health check: database connection failed")
+			return 1
+		}
+		defer database.Close()
+
+		// Validate database connectivity
+		if err := database.Pool().Ping(ctx); err != nil {
+			log.Error().Err(err).Msg("Health check: database ping failed")
+			return 1
+		}
+	}
+
+	// Initialize tenant manager
+	tm, err := tenant.NewManager(cfg, database)
+	if err != nil {
+		log.Error().Err(err).Msg("Health check: failed to initialize tenant manager")
+		return 1
+	}
+
+	// Attempt to start tenants (this validates connectivity)
+	if err := tm.StartAll(ctx); err != nil {
+		log.Error().Err(err).Msg("Health check: tenant startup failed")
+		tm.StopAll()
+		return 1
+	}
+
+	// Stop tenants after validation
+	tm.StopAll()
+
+	log.Info().Msg("Health check passed")
+	return 0
 }
 
 // handleConfigReload listens for SIGHUP and reloads configuration

@@ -96,7 +96,7 @@ var (
 	)
 
 	// Check-in/out counters
-	CheckInsTotal = promauto.NewCounterVec(
+	GuestCheckInsTotal = promauto.NewCounterVec(
 		prometheus.CounterOpts{
 			Namespace: "hospitality",
 			Subsystem: "guest",
@@ -106,7 +106,7 @@ var (
 		[]string{"tenant"},
 	)
 
-	CheckOutsTotal = promauto.NewCounterVec(
+	GuestCheckOutsTotal = promauto.NewCounterVec(
 		prometheus.CounterOpts{
 			Namespace: "hospitality",
 			Subsystem: "guest",
@@ -114,5 +114,65 @@ var (
 			Help:      "Total guest check-outs",
 		},
 		[]string{"tenant"},
+	)
+
+	// =============================================================================
+	// Site Connector metrics (hospitality_connector_*)
+	// These metrics track the on-premise site connector agent health
+	// =============================================================================
+
+	// ConnectorStatus indicates overall connector health (1=healthy, 0=unhealthy)
+	ConnectorStatus = promauto.NewGaugeVec(
+		prometheus.GaugeOpts{
+			Namespace: "hospitality",
+			Subsystem: "connector",
+			Name:      "status",
+			Help:      "Site connector health status (1=healthy, 0=unhealthy)",
+		},
+		[]string{"connector_id"},
+	)
+
+	// ConnectorCloudConnected indicates cloud WebSocket connection status
+	ConnectorCloudConnected = promauto.NewGaugeVec(
+		prometheus.GaugeOpts{
+			Namespace: "hospitality",
+			Subsystem: "connector",
+			Name:      "cloud_connected",
+			Help:      "Cloud WebSocket connection status (1=connected, 0=disconnected)",
+		},
+		[]string{"connector_id"},
+	)
+
+	// ConnectorQueueDepth tracks pending events in the local queue
+	ConnectorQueueDepth = promauto.NewGaugeVec(
+		prometheus.GaugeOpts{
+			Namespace: "hospitality",
+			Subsystem: "connector",
+			Name:      "queue_depth",
+			Help:      "Number of pending events in the connector queue",
+		},
+		[]string{"connector_id"},
+	)
+
+	// ConnectorEventsTotal counts all connector events by type
+	ConnectorEventsTotal = promauto.NewCounterVec(
+		prometheus.CounterOpts{
+			Namespace: "hospitality",
+			Subsystem: "connector",
+			Name:      "events_total",
+			Help:      "Total connector events by type (checkin, checkout, etc.)",
+		},
+		[]string{"connector_id", "event_type"},
+	)
+
+	// ConnectorReconnectTotal counts reconnection attempts
+	ConnectorReconnectTotal = promauto.NewCounterVec(
+		prometheus.CounterOpts{
+			Namespace: "hospitality",
+			Subsystem: "connector",
+			Name:      "reconnect_total",
+			Help:      "Total reconnection attempts",
+		},
+		[]string{"connector_id", "target"},
 	)
 )
