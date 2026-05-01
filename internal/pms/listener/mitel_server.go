@@ -29,6 +29,10 @@ const (
 	MaxMessageSize = 256
 )
 
+func init() {
+	pms.RegisterListener("mitel", NewMitelListener)
+}
+
 // Listener implements a TCP server that listens for incoming Mitel PMS connections.
 // Each connection is handled independently, parsing STX/ETX framed messages and
 // converting them to PMS events for downstream processing.
@@ -36,6 +40,7 @@ type Listener struct {
 	host    string
 	port    int
 	events  chan pms.Event
+	allowed []string // allowed PMS IPs; if empty, all IPs are allowed
 	listener net.Listener
 	cancel  context.CancelFunc
 	wg      sync.WaitGroup
@@ -52,9 +57,36 @@ func NewListener(host string, port int) *Listener {
 	}
 }
 
+// NewMitelListener is the factory function registered with the PMS listener registry.
+func NewMitelListener(cfg pms.ListenerConfig, events chan pms.Event) (pms.Listener, error) {
+	l := &Listener{
+		host:    cfg.ListenHost,
+		port:    cfg.ListenPort,
+		events:  events,
+		allowed: cfg.AllowedPMSIPs,
+	}
+	if l.port == 0 {
+		l.port = DefaultPort
+	}
+	return l, nil
+}
+
 // Events returns the channel of parsed PMS events from all connections.
 func (l *Listener) Events() <-chan pms.Event {
 	return l.events
+}
+
+// isAllowed checks if the remote IP is allowed to connect.
+func (l *Listener) isAllowed(remoteIP string) bool {
+	if len(l.allowed) == 0 {
+		return true
+	}
+	for _, ip := range l.allowed {
+		if ip == remoteIP {
+			return true
+		}
+	}
+	return false
 }
 
 // Listen starts the TCP server and accepts incoming connections.
@@ -122,6 +154,18 @@ func (l *Listener) handleConnection(ctx context.Context, conn net.Conn) {
 	defer conn.Close()
 
 	remoteAddr := conn.RemoteAddr().String()
+	remoteIP, _, err := net.SplitHostPort(remoteAddr)
+	if err != nil {
+		remoteIP = remoteAddr
+	}
+
+	// Check IP allowlist
+	if !l.isAllowed(remoteIP) {
+		log.Warn().Str("remote", remoteAddr).Msg("PMS connection rejected: IP not allowed")
+		conn.Close()
+		return
+	}
+
 	log.Info().
 		Str("remote", remoteAddr).
 		Msg("PMS connection opened")

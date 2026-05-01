@@ -355,3 +355,120 @@ func TestListenerConcurrentConnections(t *testing.T) {
 	cancel()
 	<-errCh
 }
+
+func TestListenerIPAllowlist(t *testing.T) {
+	l := NewListener("localhost", 0)
+	l.allowed = []string{"127.0.0.1", "::1"} // Only allow localhost
+
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+
+	errCh := make(chan error, 1)
+	go func() {
+		errCh <- l.Listen(ctx)
+	}()
+
+	time.Sleep(100 * time.Millisecond)
+
+	lnAddr := l.listener.Addr().String()
+
+	// Allowed connection should succeed
+	t.Run("allowed IP connects successfully", func(t *testing.T) {
+		conn, err := net.Dial("tcp", lnAddr)
+		if err != nil {
+			t.Fatalf("Failed to connect: %v", err)
+		}
+		defer conn.Close()
+
+		msg := buildMitelMessage("CHK1  2129")
+		if _, err := conn.Write(msg); err != nil {
+			t.Fatalf("Failed to send message: %v", err)
+		}
+
+		conn.SetReadDeadline(time.Now().Add(1 * time.Second))
+		resp := make([]byte, 1)
+		n, err := conn.Read(resp)
+		if err != nil {
+			t.Fatalf("Failed to read ACK: %v", err)
+		}
+		if n != 1 || resp[0] != ACK {
+			t.Errorf("Expected ACK, got 0x%02x", resp[0])
+		}
+	})
+
+	cancel()
+	<-errCh
+}
+
+func TestNewMitelListenerFactory(t *testing.T) {
+	events := make(chan pms.Event, 10)
+	cfg := pms.ListenerConfig{
+		ListenHost: "0.0.0.0",
+		ListenPort: 0, // Will use default
+		AllowedPMSIPs: []string{"192.168.1.100"},
+	}
+
+	l, err := NewMitelListener(cfg, events)
+	if err != nil {
+		t.Fatalf("NewMitelListener failed: %v", err)
+	}
+
+	if l.Host() != "0.0.0.0" {
+		t.Errorf("Host() = %q, want %q", l.Host(), "0.0.0.0")
+	}
+
+	// Port should default to DefaultPort when 0
+	if l.Port() != DefaultPort {
+		t.Errorf("Port() = %d, want %d (default)", l.Port(), DefaultPort)
+	}
+}
+
+func TestListenerAllowedIPs(t *testing.T) {
+	tests := []struct {
+		name     string
+		allowed  []string
+		ip       string
+		expected bool
+	}{
+		{
+			name:     "empty allowlist permits all",
+			allowed:  []string{},
+			ip:       "192.168.1.100",
+			expected: true,
+		},
+		{
+			name:     "nil allowlist permits all",
+			allowed:  nil,
+			ip:       "192.168.1.100",
+			expected: true,
+		},
+		{
+			name:     "matching IP is allowed",
+			allowed:  []string{"192.168.1.100", "10.0.0.1"},
+			ip:       "192.168.1.100",
+			expected: true,
+		},
+		{
+			name:     "non-matching IP is denied",
+			allowed:  []string{"192.168.1.100"},
+			ip:       "10.0.0.1",
+			expected: false,
+		},
+		{
+			name:     "localhost IPv4 is allowed when listed",
+			allowed:  []string{"127.0.0.1"},
+			ip:       "127.0.0.1",
+			expected: true,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			l := NewListener("localhost", 0)
+			l.allowed = tt.allowed
+			if got := l.isAllowed(tt.ip); got != tt.expected {
+				t.Errorf("isAllowed(%q) = %v, want %v", tt.ip, got, tt.expected)
+			}
+		})
+	}
+}
