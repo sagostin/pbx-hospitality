@@ -3,6 +3,7 @@ package bicom
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"net/http"
 	"net/http/httptest"
 	"testing"
@@ -192,4 +193,94 @@ func TestListExtensions(t *testing.T) {
 	if len(exts) != 2 {
 		t.Errorf("expected 2 extensions, got %d", len(exts))
 	}
+}
+
+func TestClearVoicemailForGuest(t *testing.T) {
+	t.Run("both steps succeed", func(t *testing.T) {
+		server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			w.Header().Set("Content-Type", "application/json")
+			json.NewEncoder(w).Encode(APIResponse{Success: true})
+		}))
+		defer server.Close()
+
+		client, _ := NewClient(Config{
+			BaseURL: server.URL,
+			APIKey:  "test-key",
+		})
+
+		err := client.ClearVoicemailForGuest(context.Background(), "1001")
+		if err != nil {
+			t.Errorf("ClearVoicemailForGuest() error = %v", err)
+		}
+	})
+
+	t.Run("delete fails, greeting succeeds returns VoicemailClearError", func(t *testing.T) {
+		deleteFailed := true
+		server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			w.Header().Set("Content-Type", "application/json")
+			if r.FormValue("action") == "pbxware.vm.delete_all" && deleteFailed {
+				deleteFailed = false // reset for potential future calls
+				json.NewEncoder(w).Encode(APIResponse{Success: false, Message: "delete failed"})
+				return
+			}
+			json.NewEncoder(w).Encode(APIResponse{Success: true})
+		}))
+		defer server.Close()
+
+		client, _ := NewClient(Config{
+			BaseURL: server.URL,
+			APIKey:  "test-key",
+		})
+
+		err := client.ClearVoicemailForGuest(context.Background(), "1001")
+		if err == nil {
+			t.Fatal("expected error, got nil")
+		}
+
+		var clearErr *VoicemailClearError
+		if !errors.As(err, &clearErr) {
+			t.Fatalf("expected VoicemailClearError, got %T", err)
+		}
+		if !clearErr.DeleteFailed {
+			t.Error("expected DeleteFailed to be true")
+		}
+		if clearErr.GreetingFailed {
+			t.Error("expected GreetingFailed to be false")
+		}
+	})
+
+	t.Run("both steps fail returns combined error", func(t *testing.T) {
+		deleteFailed := true
+		server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			w.Header().Set("Content-Type", "application/json")
+			if r.FormValue("action") == "pbxware.vm.delete_all" && deleteFailed {
+				deleteFailed = false
+				json.NewEncoder(w).Encode(APIResponse{Success: false, Message: "delete failed"})
+				return
+			}
+			json.NewEncoder(w).Encode(APIResponse{Success: false, Message: "greeting failed"})
+		}))
+		defer server.Close()
+
+		client, _ := NewClient(Config{
+			BaseURL: server.URL,
+			APIKey:  "test-key",
+		})
+
+		err := client.ClearVoicemailForGuest(context.Background(), "1001")
+		if err == nil {
+			t.Fatal("expected error, got nil")
+		}
+
+		var clearErr *VoicemailClearError
+		if !errors.As(err, &clearErr) {
+			t.Fatalf("expected VoicemailClearError, got %T", err)
+		}
+		if !clearErr.DeleteFailed {
+			t.Error("expected DeleteFailed to be true")
+		}
+		if !clearErr.GreetingFailed {
+			t.Error("expected GreetingFailed to be true")
+		}
+	})
 }

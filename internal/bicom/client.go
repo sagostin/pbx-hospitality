@@ -416,20 +416,55 @@ func (c *Client) ResetVoicemailGreeting(ctx context.Context, extensionID string)
 	return c.SetVoicemailGreeting(ctx, extensionID, GreetingDefault)
 }
 
+// VoicemailClearError captures partial failures in ClearVoicemailForGuest.
+// Callers can use errors.As to extract granular failure details.
+type VoicemailClearError struct {
+	DeleteFailed   bool
+	GreetingFailed bool
+	DeleteErr      error
+	GreetingErr    error
+}
+
+func (e *VoicemailClearError) Error() string {
+	var parts []string
+	if e.DeleteFailed {
+		parts = append(parts, "voicemail delete failed")
+	}
+	if e.GreetingFailed {
+		parts = append(parts, "greeting reset failed")
+	}
+	return strings.Join(parts, "; ")
+}
+
+func (e *VoicemailClearError) Is(target error) bool {
+	_, ok := target.(*VoicemailClearError)
+	return ok
+}
+
 // ClearVoicemailForGuest performs all voicemail cleanup for guest checkout:
 // - Deletes all messages
 // - Resets greeting to default
+// Returns VoicemailClearError if any step fails so callers can distinguish
+// partial from complete failures.
 func (c *Client) ClearVoicemailForGuest(ctx context.Context, extensionID string) error {
+	var clearErr VoicemailClearError
+
 	// Delete all messages first
 	if err := c.DeleteAllVoicemails(ctx, extensionID); err != nil {
 		log.Error().Err(err).Str("extension", extensionID).Msg("Failed to delete voicemails")
-		// Continue to reset greeting even if delete fails
+		clearErr.DeleteFailed = true
+		clearErr.DeleteErr = err
 	}
 
 	// Reset greeting to default
 	if err := c.ResetVoicemailGreeting(ctx, extensionID); err != nil {
 		log.Error().Err(err).Str("extension", extensionID).Msg("Failed to reset voicemail greeting")
-		return err
+		clearErr.GreetingFailed = true
+		clearErr.GreetingErr = err
+	}
+
+	if clearErr.DeleteFailed || clearErr.GreetingFailed {
+		return &clearErr
 	}
 
 	log.Info().
