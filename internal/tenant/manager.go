@@ -278,9 +278,15 @@ func (t *Tenant) Stop() {
 	t.wg.Wait()
 }
 
-// processEvents handles incoming PMS events
+// processEvents handles incoming PMS and PBX events
 func (t *Tenant) processEvents(ctx context.Context) {
 	defer t.wg.Done()
+
+	// Check if PBX provider implements EventProvider (e.g., Zultys webhooks)
+	var pbxEvents <-chan pbx.CallEvent
+	if ep, ok := t.pbxProvider.(pbx.EventProvider); ok {
+		pbxEvents = ep.Events()
+	}
 
 	for {
 		select {
@@ -291,7 +297,55 @@ func (t *Tenant) processEvents(ctx context.Context) {
 				return
 			}
 			t.handleEvent(ctx, evt)
+		case evt, ok := <-pbxEvents:
+			if !ok {
+				// Channel closed, disable PBX events
+				pbxEvents = nil
+				continue
+			}
+			t.handlePBXEvent(ctx, evt)
 		}
+	}
+}
+
+// handlePBXEvent processes a single PBX call event (e.g., from Zultys webhooks)
+func (t *Tenant) handlePBXEvent(ctx context.Context, evt pbx.CallEvent) {
+	log := log.With().
+		Str("tenant", t.ID).
+		Str("event", evt.Type.String()).
+		Str("extension", evt.Extension).
+		Logger()
+
+	switch evt.Type {
+	case pbx.CallEventAccessCode:
+		// Access code dialed (e.g., *411 for services)
+		log.Info().
+			Str("access_code", evt.AccessCode).
+			Str("caller_id", evt.CallerID).
+			Msg("Access code dialed")
+
+	case pbx.CallEventIncoming:
+		// Incoming call to extension
+		log.Info().
+			Str("caller_id", evt.CallerID).
+			Str("caller_name", evt.CallerName).
+			Msg("Incoming call")
+
+	case pbx.CallEventVoicemailLeft:
+		// Voicemail deposited for extension
+		log.Info().
+			Str("caller_id", evt.CallerID).
+			Str("caller_name", evt.CallerName).
+			Msg("Voicemail left")
+
+	case pbx.CallEventCallEnded:
+		// Call ended
+		log.Debug().
+			Str("caller_id", evt.CallerID).
+			Msg("Call ended")
+
+	default:
+		log.Warn().Msg("Unhandled PBX event type")
 	}
 }
 
