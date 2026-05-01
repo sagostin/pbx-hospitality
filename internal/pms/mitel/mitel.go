@@ -46,15 +46,17 @@ type Adapter struct {
 	cancel context.CancelFunc
 	wg     sync.WaitGroup
 
-	connected bool
+	connected   bool
+	pendingName map[string]string // room -> "" (pending), populated by next message
 }
 
 // NewAdapter creates a new Mitel protocol adapter
 func NewAdapter(host string, port int, opts ...pms.AdapterOption) (pms.Adapter, error) {
 	a := &Adapter{
-		host:   host,
-		port:   port,
-		events: make(chan pms.Event, 100),
+		host:        host,
+		port:        port,
+		events:      make(chan pms.Event, 100),
+		pendingName: make(map[string]string),
 	}
 
 	for _, opt := range opts {
@@ -214,7 +216,7 @@ func (a *Adapter) readLoop(ctx context.Context) {
 		}
 
 		// Parse the message
-		evt, err := parseMessage(msg)
+		evt, err := parseMessage(msg, a.pendingName)
 		if err != nil {
 			log.Error().Err(err).Bytes("raw", msg).Msg("Failed to parse Mitel message")
 			a.SendNak()
@@ -232,10 +234,37 @@ func (a *Adapter) readLoop(ctx context.Context) {
 	}
 }
 
-// parseMessage parses a Mitel PMS message
+// parseMessage parses a Mitel PMS message.
+// It accepts an optional pendingName map for stateful NAM guest-name tracking.
+// If pendingName is non-nil, NAM events use it to store/retrieve pending name data.
 // Format: <FUNC><STATUS><ROOM#> (10 chars total)
 // FUNC: 3 chars, STATUS: 2 chars, ROOM: 5 chars
-func parseMessage(msg []byte) (pms.Event, error) {
+// A name payload may arrive as a separate message longer than 10 chars,
+// with the 5-char room number at the start followed by the guest name.
+func parseMessage(msg []byte, pendingName map[string]string) (pms.Event, error) {
+	// Handle variable-length name payload: starts with 5-char room number
+	// followed by the guest name (e.g., "2129 Smith, John    ").
+	// Only used when there's a pending room waiting for a name.
+	if len(msg) > 10 && pendingName != nil {
+		payloadRoom := strings.TrimSpace(string(msg[0:5]))
+		if _, ok := pendingName[payloadRoom]; ok {
+			name := strings.TrimSpace(string(msg[5:]))
+			delete(pendingName, payloadRoom)
+			return pms.Event{
+				Type:      pms.EventNameUpdate,
+				Room:      payloadRoom,
+				GuestName: name,
+				Status:    true,
+				Timestamp: time.Now(),
+				RawData:   msg,
+				Metadata: map[string]string{
+					"function": FuncName,
+					"status":   "1",
+				},
+			}, nil
+		}
+	}
+
 	if len(msg) < 10 {
 		return pms.Event{}, fmt.Errorf("message too short: %d bytes", len(msg))
 	}
@@ -271,9 +300,19 @@ func parseMessage(msg []byte) (pms.Event, error) {
 
 	case FuncName:
 		evt.Type = pms.EventNameUpdate
-		// Name data follows in subsequent message or field
-		// For now, set status
 		evt.Status = status == "1"
+		// Mitel SX-200 sends NAM followed by a name payload message.
+		// Register room as pending; if pendingName already has a value for this
+		// room, consume it as the guest name (name payload arrived first).
+		if pendingName != nil {
+			if name, ok := pendingName[room]; ok && name != "" {
+				evt.GuestName = name
+				delete(pendingName, room)
+			} else {
+				// Mark as pending; next message for this room carries the name.
+				pendingName[room] = ""
+			}
+		}
 
 	case FuncRoom:
 		evt.Type = pms.EventRoomStatus
@@ -292,5 +331,5 @@ func parseMessage(msg []byte) (pms.Event, error) {
 
 // ParseMessage is exported for testing
 func ParseMessage(msg []byte) (pms.Event, error) {
-	return parseMessage(msg)
+	return parseMessage(msg, nil)
 }
