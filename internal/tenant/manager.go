@@ -15,6 +15,7 @@ import (
 	"github.com/sagostin/pbx-hospitality/internal/metrics"
 	"github.com/sagostin/pbx-hospitality/internal/pbx"
 	_ "github.com/sagostin/pbx-hospitality/internal/pbx/bicom" // Register Bicom provider
+	_ "github.com/sagostin/pbx-hospitality/internal/pbx/zultys" // Register Zultys provider
 	"github.com/sagostin/pbx-hospitality/internal/pms"
 )
 
