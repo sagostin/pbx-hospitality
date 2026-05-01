@@ -17,6 +17,8 @@ import (
 	"github.com/sagostin/pbx-hospitality/internal/pms"
 	"github.com/sagostin/pbx-hospitality/internal/pms/tigertms"
 	"github.com/sagostin/pbx-hospitality/internal/tenant"
+
+	"github.com/sagostin/pbx-hospitality/internal/api/admin"
 )
 
 // Server holds API dependencies
@@ -25,6 +27,7 @@ type Server struct {
 	cfg              *config.Config
 	db               *db.DB              // May be nil if DB not configured
 	tigertmsHandlers map[string]http.Handler // tenant ID -> Tigertms HTTP handler
+	admin            *admin.AdminServer
 }
 
 // NewRouter creates the HTTP router with all endpoints
@@ -39,6 +42,7 @@ func NewRouterWithDB(tm *tenant.Manager, cfg *config.Config, database *db.DB) ht
 		cfg:              cfg,
 		db:               database,
 		tigertmsHandlers: make(map[string]http.Handler),
+		admin:            admin.NewAdminServer(database),
 	}
 	r := chi.NewRouter()
 
@@ -79,6 +83,45 @@ func NewRouterWithDB(tm *tenant.Manager, cfg *config.Config, database *db.DB) ht
 		// PBX webhook endpoints for receiving inbound call events
 		r.Route("/pbx", func(r chi.Router) {
 			r.Post("/webhook/{tenant}", s.handlePBXWebhook)
+		})
+
+		// Admin API endpoints for managing clients, systems, and sites
+		r.Route("/admin", func(r chi.Router) {
+			// Clients
+			r.Route("/clients", func(r chi.Router) {
+				r.Get("/", s.admin.ListClients)
+				r.Post("/", s.admin.CreateClient)
+				r.Get("/{id}", s.admin.GetClient)
+				r.Put("/{id}", s.admin.UpdateClient)
+				r.Delete("/{id}", s.admin.DeleteClient)
+
+				// Systems (nested under clients)
+				r.Route("/{client_id}/systems", func(r chi.Router) {
+					r.Get("/", s.admin.ListSystems)
+					r.Post("/", s.admin.CreateSystem)
+				})
+			})
+
+			// Systems (top-level for GET/PUT/DELETE by ID)
+			r.Route("/systems", func(r chi.Router) {
+				r.Get("/{id}", s.admin.GetSystem)
+				r.Put("/{id}", s.admin.UpdateSystem)
+				r.Delete("/{id}", s.admin.DeleteSystem)
+
+				// Sites (nested under systems)
+				r.Route("/{system_id}/sites", func(r chi.Router) {
+					r.Get("/", s.admin.ListSites)
+					r.Post("/", s.admin.CreateSite)
+				})
+			})
+
+			// Sites (top-level for GET/PUT/DELETE by ID)
+			r.Route("/sites", func(r chi.Router) {
+				r.Get("/{id}", s.admin.GetSite)
+				r.Put("/{id}", s.admin.UpdateSite)
+				r.Delete("/{id}", s.admin.DeleteSite)
+				r.Post("/{id}/reload", s.admin.ReloadSite)
+			})
 		})
 	})
 
