@@ -12,6 +12,7 @@ import (
 	"github.com/rs/zerolog/log"
 
 	"github.com/sagostin/pbx-hospitality/internal/config"
+	"github.com/sagostin/pbx-hospitality/internal/db"
 	"github.com/sagostin/pbx-hospitality/internal/metrics"
 	"github.com/sagostin/pbx-hospitality/internal/pbx"
 	_ "github.com/sagostin/pbx-hospitality/internal/pbx/bicom" // Register Bicom provider
@@ -21,21 +22,23 @@ import (
 
 // Manager manages all tenant instances
 type Manager struct {
-	cfg     *config.Config
-	tenants map[string]*Tenant
-	mu      sync.RWMutex
+	cfg      *config.Config
+	database *db.DB
+	tenants  map[string]*Tenant
+	mu       sync.RWMutex
 }
 
 // NewManager creates a new tenant manager
-func NewManager(cfg *config.Config) (*Manager, error) {
+func NewManager(cfg *config.Config, database *db.DB) (*Manager, error) {
 	m := &Manager{
-		cfg:     cfg,
-		tenants: make(map[string]*Tenant),
+		cfg:      cfg,
+		database: database,
+		tenants:  make(map[string]*Tenant),
 	}
 
 	// Initialize tenants from config
 	for _, tc := range cfg.Tenants {
-		t, err := NewTenant(tc)
+		t, err := NewTenant(tc, database)
 		if err != nil {
 			return nil, err
 		}
@@ -145,7 +148,7 @@ func (m *Manager) Reload(newCfg *config.Config) error {
 		} else {
 			// New tenant - create and start
 			log.Info().Str("tenant", id).Msg("New tenant in config, starting")
-			newTenant, err := NewTenant(tc)
+			newTenant, err := NewTenant(tc, m.database)
 			if err != nil {
 				log.Error().Err(err).Str("tenant", id).Msg("Failed to create new tenant")
 				continue
@@ -167,6 +170,7 @@ type Tenant struct {
 	ID          string
 	Name        string
 	cfg         config.TenantConfig
+	database    *db.DB
 	pmsAdapter  pms.Adapter
 	pbxProvider pbx.Provider // PBX provider (Bicom, FreeSWITCH, etc.)
 	mapper      *RoomMapper
@@ -176,7 +180,7 @@ type Tenant struct {
 }
 
 // NewTenant creates a new tenant instance
-func NewTenant(cfg config.TenantConfig) (*Tenant, error) {
+func NewTenant(cfg config.TenantConfig, database *db.DB) (*Tenant, error) {
 	// Load timezone (default to UTC if not specified or invalid)
 	var tz *time.Location = time.UTC
 	if cfg.Timezone != "" {
@@ -193,6 +197,7 @@ func NewTenant(cfg config.TenantConfig) (*Tenant, error) {
 		ID:       cfg.ID,
 		Name:     cfg.Name,
 		cfg:      cfg,
+		database: database,
 		mapper:   NewRoomMapper(cfg.RoomPrefix),
 		timezone: tz,
 	}
@@ -425,7 +430,15 @@ func (t *Tenant) handleCheckIn(ctx context.Context, ext string, evt pms.Event, l
 		log.Info().Str("guest", evt.GuestName).Msg("Guest checked in, extension name updated")
 	}
 
-	// TODO: Optionally set guest service plan to enable outbound calling
+	// Persist guest session to database
+	if t.database != nil {
+		reservationID := evt.Metadata["reservation_id"]
+		if _, err := t.database.CreateGuestSession(ctx, t.ID, evt.Room, ext, evt.GuestName, reservationID, map[string]interface{}{}); err != nil {
+			log.Error().Err(err).Msg("Failed to persist guest session to database")
+		} else {
+			log.Info().Str("reservation_id", reservationID).Msg("Guest session persisted to database")
+		}
+	}
 }
 
 // handleCheckOut handles guest check-out event
@@ -452,7 +465,14 @@ func (t *Tenant) handleCheckOut(ctx context.Context, ext string, evt pms.Event, 
 		log.Error().Err(err).Msg("Failed to clear MWI")
 	}
 
-	// TODO: Optionally set guest service plan to disable outbound calling
+	// End guest session in database
+	if t.database != nil {
+		if err := t.database.EndGuestSession(ctx, t.ID, evt.Room); err != nil {
+			log.Error().Err(err).Msg("Failed to end guest session in database")
+		} else {
+			log.Info().Msg("Guest session ended in database")
+		}
+	}
 }
 
 // handleWakeUp handles wake-up call scheduling from PMS
