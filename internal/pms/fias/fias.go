@@ -541,6 +541,7 @@ func (a *Adapter) handleLinkRecord(line string, conn net.Conn) {
 // ErrLinkRecord is returned when a link record (LR/LS/LA/LE) is parsed.
 // These records are handled specially by the protocol and not emitted as events.
 var ErrLinkRecord = fmt.Errorf("link record")
+var errKeepalive = fmt.Errorf("keepalive")
 
 // parseRecord parses a FIAS record
 // Format: <RECORD_TYPE>|<FIELD>=<VALUE>|<FIELD>=<VALUE>|...|
