@@ -23,30 +23,135 @@ import (
 
 // Manager manages all tenant instances
 type Manager struct {
-	cfg      *config.Config
 	database *db.DB
 	tenants  map[string]*Tenant
 	mu       sync.RWMutex
 }
 
 // NewManager creates a new tenant manager
-func NewManager(cfg *config.Config, database *db.DB) (*Manager, error) {
+func NewManager(database *db.DB) (*Manager, error) {
 	m := &Manager{
-		cfg:      cfg,
 		database: database,
 		tenants:  make(map[string]*Tenant),
 	}
 
-	// Initialize tenants from config
-	for _, tc := range cfg.Tenants {
-		t, err := NewTenant(tc, database)
-		if err != nil {
-			return nil, err
-		}
-		m.tenants[tc.ID] = t
+	// If no database, start with empty tenant map
+	if database == nil {
+		return m, nil
 	}
 
 	return m, nil
+}
+
+// LoadFromDB loads and starts all enabled tenants from the database
+func (m *Manager) LoadFromDB(ctx context.Context) error {
+	if m.database == nil {
+		log.Warn().Msg("No database configured, cannot load tenants from DB")
+		return nil
+	}
+
+	tenants, err := m.database.ListTenants(ctx)
+	if err != nil {
+		return fmt.Errorf("listing tenants from database: %w", err)
+	}
+
+	for _, t := range tenants {
+		if !t.Enabled {
+			continue
+		}
+		// Convert db.Tenant to config.TenantConfig
+		tc := m.dbTenantToConfig(t)
+		tenant, err := NewTenant(tc, m.database)
+		if err != nil {
+			log.Error().Err(err).Str("tenant", t.ID).Msg("Failed to create tenant")
+			continue
+		}
+		if err := tenant.Start(ctx); err != nil {
+			log.Error().Err(err).Str("tenant", t.ID).Msg("Failed to start tenant")
+			continue
+		}
+		m.tenants[t.ID] = tenant
+		log.Info().Str("tenant", t.ID).Str("name", t.Name).Msg("Tenant loaded from database")
+	}
+
+	return nil
+}
+
+// dbTenantToConfig converts a database tenant row to a TenantConfig
+func (m *Manager) dbTenantToConfig(t db.Tenant) config.TenantConfig {
+	return config.TenantConfig{
+		ID:     t.ID,
+		Name:   t.Name,
+		PMS:    pmsConfigFromMap(t.PMSConfig),
+		PBX:    pbxConfigFromMap(t.PBXConfig),
+		Settings: t.Settings,
+	}
+}
+
+// pmsConfigFromMap converts a map to PMSConfig
+func pmsConfigFromMap(m map[string]interface{}) config.PMSConfig {
+	cfg := config.PMSConfig{}
+	if v, ok := m["protocol"].(string); ok {
+		cfg.Protocol = v
+	}
+	if v, ok := m["host"].(string); ok {
+		cfg.Host = v
+	}
+	if v, ok := m["port"].(float64); ok {
+		cfg.Port = int(v)
+	}
+	if v, ok := m["auth_token"].(string); ok {
+		cfg.AuthToken = v
+	}
+	if v, ok := m["path_prefix"].(string); ok {
+		cfg.PathPrefix = v
+	}
+	return cfg
+}
+
+// pbxConfigFromMap converts a map to PBXConfig
+func pbxConfigFromMap(m map[string]interface{}) config.PBXConfig {
+	cfg := config.PBXConfig{}
+	if v, ok := m["type"].(string); ok {
+		cfg.Type = v
+	}
+	if v, ok := m["ari_url"].(string); ok {
+		cfg.ARIURL = v
+	}
+	if v, ok := m["ari_ws_url"].(string); ok {
+		cfg.ARIWSUrl = v
+	}
+	if v, ok := m["ari_user"].(string); ok {
+		cfg.ARIUser = v
+	}
+	if v, ok := m["ari_pass"].(string); ok {
+		cfg.ARIPass = v
+	}
+	if v, ok := m["app_name"].(string); ok {
+		cfg.AppName = v
+	}
+	if v, ok := m["api_url"].(string); ok {
+		cfg.APIURL = v
+	}
+	if v, ok := m["api_key"].(string); ok {
+		cfg.APIKey = v
+	}
+	if v, ok := m["tenant_id"].(string); ok {
+		cfg.TenantID = v
+	}
+	if v, ok := m["auth_url"].(string); ok {
+		cfg.AuthURL = v
+	}
+	if v, ok := m["username"].(string); ok {
+		cfg.Username = v
+	}
+	if v, ok := m["password"].(string); ok {
+		cfg.Password = v
+	}
+	if v, ok := m["webhook_secret"].(string); ok {
+		cfg.WebhookSecret = v
+	}
+	return cfg
 }
 
 // StartAll starts all tenant services
@@ -94,75 +199,84 @@ func (m *Manager) List() []string {
 	return ids
 }
 
-// Reload updates tenant configurations without full restart
-// - Stops tenants that were removed from config
-// - Starts new tenants added to config
+// ReloadFromDB reloads tenants from the database
+// - Stops tenants that were removed from DB
+// - Starts new tenants added to DB
 // - Updates settings for existing tenants (reconnects if needed)
-func (m *Manager) Reload(newCfg *config.Config) error {
+func (m *Manager) ReloadFromDB(ctx context.Context) error {
+	if m.database == nil {
+		return fmt.Errorf("no database configured")
+	}
+
+	tenants, err := m.database.ListTenants(ctx)
+	if err != nil {
+		return fmt.Errorf("listing tenants from database: %w", err)
+	}
+
+	// Build set of new tenant IDs
+	newTenantIDs := make(map[string]bool)
+	for _, t := range tenants {
+		if t.Enabled {
+			newTenantIDs[t.ID] = true
+		}
+	}
+
 	m.mu.Lock()
 	defer m.mu.Unlock()
 
-	// Build set of new tenant IDs
-	newTenantIDs := make(map[string]config.TenantConfig)
-	for _, tc := range newCfg.Tenants {
-		// Skip disabled tenants
-		if tc.Enabled != nil && !*tc.Enabled {
-			continue
-		}
-		newTenantIDs[tc.ID] = tc
-	}
-
-	// Stop and remove tenants that no longer exist in config
+	// Stop and remove tenants that no longer exist in DB
 	for id, t := range m.tenants {
-		if _, exists := newTenantIDs[id]; !exists {
-			log.Info().Str("tenant", id).Msg("Tenant removed from config, stopping")
+		if !newTenantIDs[id] {
+			log.Info().Str("tenant", id).Msg("Tenant removed from DB, stopping")
 			t.Stop()
 			delete(m.tenants, id)
 		}
 	}
 
 	// Add or update tenants
-	ctx := context.Background()
-	for id, tc := range newTenantIDs {
-		if existing, exists := m.tenants[id]; exists {
+	for _, t := range tenants {
+		if !t.Enabled {
+			continue
+		}
+		tc := m.dbTenantToConfig(t)
+		if existing, exists := m.tenants[t.ID]; exists {
 			// Tenant exists - check if config changed
 			if existing.cfg.PMS.Host != tc.PMS.Host || existing.cfg.PMS.Port != tc.PMS.Port {
 				// PMS config changed - restart tenant
-				log.Info().Str("tenant", id).Msg("PMS config changed, reconnecting")
+				log.Info().Str("tenant", t.ID).Msg("PMS config changed, reconnecting")
 				existing.Stop()
 				newTenant, err := NewTenant(tc, m.database)
 				if err != nil {
-					log.Error().Err(err).Str("tenant", id).Msg("Failed to recreate tenant")
+					log.Error().Err(err).Str("tenant", t.ID).Msg("Failed to recreate tenant")
 					continue
 				}
 				if err := newTenant.Start(ctx); err != nil {
-					log.Error().Err(err).Str("tenant", id).Msg("Failed to restart tenant")
+					log.Error().Err(err).Str("tenant", t.ID).Msg("Failed to restart tenant")
 					continue
 				}
-				m.tenants[id] = newTenant
+				m.tenants[t.ID] = newTenant
 			} else {
 				// Just update config fields that don't require restart
 				existing.Name = tc.Name
 				existing.cfg = tc
-				log.Debug().Str("tenant", id).Msg("Tenant config updated")
+				log.Debug().Str("tenant", t.ID).Msg("Tenant config updated")
 			}
 		} else {
 			// New tenant - create and start
-			log.Info().Str("tenant", id).Msg("New tenant in config, starting")
+			log.Info().Str("tenant", t.ID).Msg("New tenant in DB, starting")
 			newTenant, err := NewTenant(tc, m.database)
 			if err != nil {
-				log.Error().Err(err).Str("tenant", id).Msg("Failed to create new tenant")
+				log.Error().Err(err).Str("tenant", t.ID).Msg("Failed to create new tenant")
 				continue
 			}
 			if err := newTenant.Start(ctx); err != nil {
-				log.Error().Err(err).Str("tenant", id).Msg("Failed to start new tenant")
+				log.Error().Err(err).Str("tenant", t.ID).Msg("Failed to start new tenant")
 				continue
 			}
-			m.tenants[id] = newTenant
+			m.tenants[t.ID] = newTenant
 		}
 	}
 
-	m.cfg = newCfg
 	return nil
 }
 

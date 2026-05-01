@@ -141,34 +141,51 @@ graph LR
 
 ### Tenant Configuration
 
+In the DB-first architecture, tenant configuration is managed entirely through the database and Admin API. The `config.yaml` file contains only server-level settings.
+
+**config.yaml (server settings only):**
 ```yaml
-tenants:
-  - id: hotel-alpha
-    name: "Hotel Alpha"
-    pms:
-      protocol: fias
-      host: 10.0.1.50
-      port: 3722
-    pbx:
-      ari_url: "http://pbx.alpha.local:8088/ari"
-      ari_user: "hotel-alpha"
-      ari_pass: "${HOTEL_ALPHA_ARI_SECRET}"
-      tenant_id: "alpha"
-    room_prefix: "1"    # Rooms 100-199 → Extensions 1100-1199
-    
-  - id: hotel-beta
-    name: "Hotel Beta"
-    pms:
-      protocol: mitel
-      host: 10.0.2.50
-      port: 23
-    pbx:
-      ari_url: "http://pbx.beta.local:8088/ari"
-      ari_user: "hotel-beta"
-      ari_pass: "${HOTEL_BETA_ARI_SECRET}"
-      tenant_id: "beta"
-    room_prefix: "2"
+server:
+  port: 8080
+
+database:
+  host: "10.0.0.5"
+  port: 5432
+  user: "hospitality"
+  password: "${DB_PASSWORD}"
+  database: "hospitality"
+  ssl_mode: "require"
+
+crypto:
+  master_key: "${ENCRYPTION_MASTER_KEY}"
+
+logging:
+  level: "info"
+  format: "json"
 ```
+
+**Database Schema (tenants table):**
+```sql
+CREATE TABLE tenants (
+    id          VARCHAR(64) PRIMARY KEY,
+    name        VARCHAR(255) NOT NULL,
+    pms_config  JSONB NOT NULL,
+    pbx_config  JSONB NOT NULL,
+    settings    JSONB DEFAULT '{}',
+    enabled     BOOLEAN DEFAULT true,
+    created_at  TIMESTAMPTZ DEFAULT NOW(),
+    updated_at  TIMESTAMPTZ DEFAULT NOW()
+);
+```
+
+**Admin API for Tenant Management:**
+| Method | Endpoint | Description |
+|--------|----------|-------------|
+| `GET` | `/api/v1/tenants` | List all tenants |
+| `POST` | `/api/v1/tenants` | Create tenant |
+| `GET` | `/api/v1/tenants/{id}` | Get tenant details |
+| `PUT` | `/api/v1/tenants/{id}` | Update tenant |
+| `DELETE` | `/api/v1/tenants/{id}` | Remove tenant |
 
 ---
 
