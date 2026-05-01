@@ -18,6 +18,7 @@ import (
 	_ "github.com/sagostin/pbx-hospitality/internal/pbx/bicom" // Register Bicom provider
 	_ "github.com/sagostin/pbx-hospitality/internal/pbx/zultys" // Register Zultys provider
 	"github.com/sagostin/pbx-hospitality/internal/pms"
+	"github.com/sagostin/pbx-hospitality/internal/pms/tigertms"
 )
 
 // Manager manages all tenant instances
@@ -129,7 +130,7 @@ func (m *Manager) Reload(newCfg *config.Config) error {
 				// PMS config changed - restart tenant
 				log.Info().Str("tenant", id).Msg("PMS config changed, reconnecting")
 				existing.Stop()
-				newTenant, err := NewTenant(tc)
+				newTenant, err := NewTenant(tc, m.database)
 				if err != nil {
 					log.Error().Err(err).Str("tenant", id).Msg("Failed to recreate tenant")
 					continue
@@ -209,7 +210,11 @@ func (t *Tenant) Start(ctx context.Context) error {
 	ctx, t.cancel = context.WithCancel(ctx)
 
 	// Initialize PMS adapter
-	adapter, err := pms.NewAdapter(t.cfg.PMS.Protocol, t.cfg.PMS.Host, t.cfg.PMS.Port)
+	var adapterOpts []pms.AdapterOption
+	if t.cfg.PMS.Protocol == "tigertms" && t.cfg.PMS.AuthToken != "" {
+		adapterOpts = append(adapterOpts, tigertms.WithAuthToken(t.cfg.PMS.AuthToken))
+	}
+	adapter, err := pms.NewAdapter(t.cfg.PMS.Protocol, t.cfg.PMS.Host, t.cfg.PMS.Port, adapterOpts...)
 	if err != nil {
 		return err
 	}

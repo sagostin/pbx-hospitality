@@ -13,14 +13,17 @@ import (
 	"github.com/sagostin/pbx-hospitality/internal/config"
 	"github.com/sagostin/pbx-hospitality/internal/db"
 	"github.com/sagostin/pbx-hospitality/internal/pbx"
+	"github.com/sagostin/pbx-hospitality/internal/pms"
+	"github.com/sagostin/pbx-hospitality/internal/pms/tigertms"
 	"github.com/sagostin/pbx-hospitality/internal/tenant"
 )
 
 // Server holds API dependencies
 type Server struct {
-	tm  *tenant.Manager
-	cfg *config.Config
-	db  *db.DB // May be nil if DB not configured
+	tm               *tenant.Manager
+	cfg              *config.Config
+	db               *db.DB              // May be nil if DB not configured
+	tigertmsHandlers map[string]http.Handler // tenant ID -> Tigertms HTTP handler
 }
 
 // NewRouter creates the HTTP router with all endpoints
@@ -30,7 +33,12 @@ func NewRouter(tm *tenant.Manager, cfg *config.Config) http.Handler {
 
 // NewRouterWithDB creates the HTTP router with database support
 func NewRouterWithDB(tm *tenant.Manager, cfg *config.Config, database *db.DB) http.Handler {
-	s := &Server{tm: tm, cfg: cfg, db: database}
+	s := &Server{
+		tm:               tm,
+		cfg:              cfg,
+		db:               database,
+		tigertmsHandlers: make(map[string]http.Handler),
+	}
 	r := chi.NewRouter()
 
 	// Middleware
@@ -71,6 +79,35 @@ func NewRouterWithDB(tm *tenant.Manager, cfg *config.Config, database *db.DB) ht
 		r.Route("/pbx", func(r chi.Router) {
 			r.Post("/webhook/{tenant}", s.handlePBXWebhook)
 		})
+	})
+
+	// Register TigerTMS HTTP handlers for tenants with tigertms PMS protocol
+	for _, tc := range cfg.Tenants {
+		if tc.PMS.Protocol == "tigertms" {
+			// Create a TigerTMS adapter (host/port are not used for HTTP server, pass 0)
+			adapter, err := pms.NewAdapter("tigertms", "", 0, tigertms.WithAuthToken(tc.PMS.AuthToken))
+			if err != nil {
+				log.Error().Err(err).Str("tenant", tc.ID).Msg("Failed to create TigerTMS adapter for API router")
+				continue
+			}
+			tigerAdapter, ok := adapter.(*tigertms.Adapter)
+			if !ok {
+				log.Error().Str("tenant", tc.ID).Msg("TigerTMS adapter is wrong type")
+				continue
+			}
+			handler := tigertms.NewHandler(tigerAdapter)
+			// Store the chi.Router (which implements http.Handler), not the Handler wrapper
+			s.tigertmsHandlers[tc.ID] = handler.Routes()
+
+			log.Info().Str("tenant", tc.ID).Str("path_prefix", tc.PMS.PathPrefix).Msg("TigerTMS HTTP handler registered")
+		}
+	}
+
+	// TigerTMS HTTP endpoints: /tigertms/{tenant}/API/*
+	// Each tenant gets its own subrouter rooted at /tigertms/{tenant}
+	r.Route("/tigertms/{tenant}", func(r chi.Router) {
+		// All TigerTMS API endpoints (including CDR) are handled by the tigertms.Handler
+		r.Post("/API/*", s.handleTigerTMS)
 	})
 
 	return r
@@ -411,4 +448,22 @@ func (s *Server) handlePBXWebhook(w http.ResponseWriter, r *http.Request) {
 
 	w.WriteHeader(http.StatusOK)
 	w.Write([]byte(`{"status":"ok"}`))
+}
+
+// =============================================================================
+// TigerTMS HTTP Endpoint Handlers
+// =============================================================================
+
+// handleTigerTMS routes TigerTMS API requests to the appropriate tenant handler
+func (s *Server) handleTigerTMS(w http.ResponseWriter, r *http.Request) {
+	tenantID := chi.URLParam(r, "tenant")
+
+	handler, ok := s.tigertmsHandlers[tenantID]
+	if !ok {
+		log.Warn().Str("tenant", tenantID).Msg("TigerTMS request for unknown tenant")
+		http.Error(w, "tenant not found", http.StatusNotFound)
+		return
+	}
+
+	handler.ServeHTTP(w, r)
 }
