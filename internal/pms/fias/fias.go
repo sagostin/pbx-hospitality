@@ -190,7 +190,7 @@ func (a *Adapter) readLoop(ctx context.Context) {
 		// Parse the record
 		evt, err := parseRecord(line)
 		if err != nil {
-			if err == errLinkRecord || err == errKeepalive {
+			if err == ErrLinkRecord || err == errKeepalive {
 				// Handle special records
 				a.handleLinkRecord(line)
 				continue
@@ -245,7 +245,7 @@ func (a *Adapter) handleLinkRecord(line string) {
 	}
 }
 
-var errLinkRecord = fmt.Errorf("link record")
+var ErrLinkRecord = fmt.Errorf("link record")
 var errKeepalive = fmt.Errorf("keepalive")
 
 // parseRecord parses a FIAS record
@@ -261,7 +261,7 @@ func parseRecord(line string) (pms.Event, error) {
 	// Handle link/keepalive records separately
 	switch recordType {
 	case RecordLinkRecord, RecordLinkStart, RecordLinkAlive, RecordLinkEnd:
-		return pms.Event{}, errLinkRecord
+		return pms.Event{}, ErrLinkRecord
 	}
 
 	// Parse fields into map

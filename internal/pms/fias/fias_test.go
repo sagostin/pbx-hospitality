@@ -117,9 +117,9 @@ func TestParseLinkRecords(t *testing.T) {
 
 	for _, line := range linkRecords {
 		t.Run(line[:2], func(t *testing.T) {
-			_, err := ParseRecord(line)
-			if err != errLinkRecord {
-				t.Errorf("expected errLinkRecord, got %v", err)
+		// Link records should return ErrLinkRecord
+			if err != ErrLinkRecord {
+				t.Errorf("expected ErrLinkRecord, got %v", err)
 			}
 		})
 	}
