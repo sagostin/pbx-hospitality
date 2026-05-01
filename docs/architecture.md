@@ -509,6 +509,99 @@ See [Bicom API Reference](bicom-api.md) for full documentation.
 
 ---
 
+## WebSocket Bridge to Cloud Platform
+
+The WebSocket bridge provides a persistent connection for forwarding PMS events to the cloud platform, supporting multi-tenant routing and automatic reconnection.
+
+### Overview
+
+```mermaid
+graph LR
+    subgraph "Local PMS Systems"
+        FIAS[FIAS/Fidelio PMS]
+        MITEL[Mitel SX-200 PMS]
+    end
+
+    subgraph "Integration Service"
+        BRIDGE[WebSocket Bridge]
+        EVENTS[(Event Processing)]
+    end
+
+    subgraph "Cloud Platform"
+        CLOUD[Cloud WebSocket Endpoint]
+    end
+
+    FIAS --> BRIDGE
+    MITEL --> BRIDGE
+    BRIDGE --> CLOUD
+    EVENTS --> BRIDGE
+```
+
+### Bridge Configuration
+
+| Setting | Description | Default |
+|---------|-------------|---------|
+| `cloud_url` | WebSocket endpoint URL (wss://...) | Required |
+| `tenant_id` | Tenant identifier for routing | Required |
+| `auth_token` | Bearer token for authentication | Optional |
+| `reconnect_base_delay` | Initial reconnection delay | 1s |
+| `reconnect_max_delay` | Maximum reconnection delay | 60s |
+| `ping_interval` | Keep-alive ping interval | 30s |
+
+### JSON Message Format
+
+Events forwarded to the cloud platform use this JSON format:
+
+```json
+{
+  "type": "event",
+  "payload": {
+    "id": "uuid-v4",
+    "tenant_id": "hotel-alpha",
+    "event_type": "check_in",
+    "room": "1015",
+    "extension": "11015",
+    "guest_name": "Smith, John",
+    "status": true,
+    "timestamp": "2026-01-15T10:30:00Z",
+    "metadata": {
+      "reservation_id": "RES-12345"
+    }
+  },
+  "timestamp": "2026-01-15T10:30:00.123Z"
+}
+```
+
+### Exponential Backoff
+
+Reconnection uses exponential backoff with jitter to prevent thundering herd:
+
+| Attempt | Base Delay | With Jitter (±25%) |
+|---------|------------|-------------------|
+| 1 | 1s | 0.75s - 1.25s |
+| 2 | 2s | 1.5s - 2.5s |
+| 3 | 4s | 3s - 5s |
+| 4 | 8s | 6s - 10s |
+| 5+ | Capped at 60s | 45s - 75s |
+
+### Metrics
+
+```
+# WebSocket connection status per tenant
+websocket_connection_status{tenant="hotel-alpha"} 1
+
+# Last successful connection timestamp
+websocket_last_connected_timestamp{tenant="hotel-alpha"} 1705315800
+
+# Events sent to cloud
+websocket_events_sent_total{tenant="hotel-alpha", event_type="check_in"} 1523
+
+# Reconnection attempts
+websocket_reconnections_total{tenant="hotel-alpha"} 12
+```
+
+---
+
 ## Future Extensions
 
 - **Additional PMS Protocols**: Hilton PEP, Hyatt HIS, Generic HTNG

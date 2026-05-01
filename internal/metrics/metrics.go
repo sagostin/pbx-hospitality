@@ -115,7 +115,6 @@ var (
 		},
 		[]string{"tenant"},
 	)
-
 	// =============================================================================
 	// Site Connector metrics (hospitality_connector_*)
 	// These metrics track the on-premise site connector agent health
@@ -174,5 +173,86 @@ var (
 			Help:      "Total reconnection attempts",
 		},
 		[]string{"connector_id", "target"},
+	)
+
+	// =============================================================================
+	// WebSocket Bridge Metrics
+	// =============================================================================
+
+	// WebSocket connection status (1 = connected, 0 = disconnected)
+	WebSocketConnectionStatus = promauto.NewGaugeVec(
+		prometheus.GaugeOpts{
+			Namespace: "hospitality",
+			Subsystem: "websocket",
+			Name:      "connection_status",
+			Help:      "WebSocket connection status (1=connected, 0=disconnected)",
+		},
+		[]string{"tenant"},
+	)
+
+	// WebSocket last connected timestamp
+	WebSocketLastConnected = promauto.NewGaugeVec(
+		prometheus.GaugeOpts{
+			Namespace: "hospitality",
+			Subsystem: "websocket",
+			Name:      "last_connected_timestamp",
+			Help:      "Unix timestamp of last successful WebSocket connection",
+		},
+		[]string{"tenant"},
+	)
+
+	// WebSocket reconnect delay (seconds)
+	WebSocketReconnectDelay = promauto.NewGaugeVec(
+		prometheus.GaugeOpts{
+			Namespace: "hospitality",
+			Subsystem: "websocket",
+			Name:      "reconnect_delay_seconds",
+			Help:      "Current WebSocket reconnection delay in seconds",
+		},
+		[]string{"tenant"},
+	)
+
+	// WebSocket events sent counter
+	WebSocketEventsSent = promauto.NewCounterVec(
+		prometheus.CounterOpts{
+			Namespace: "hospitality",
+			Subsystem: "websocket",
+			Name:      "events_sent_total",
+			Help:      "Total WebSocket events sent to cloud platform",
+		},
+		[]string{"tenant", "event_type"},
+	)
+
+	// WebSocket events received counter (from cloud)
+	WebSocketEventsReceived = promauto.NewCounterVec(
+		prometheus.CounterOpts{
+			Namespace: "hospitality",
+			Subsystem: "websocket",
+			Name:      "events_received_total",
+			Help:      "Total WebSocket events received from cloud platform",
+		},
+		[]string{"tenant"},
+	)
+
+	// WebSocket send errors
+	WebSocketSendErrors = promauto.NewCounterVec(
+		prometheus.CounterOpts{
+			Namespace: "hospitality",
+			Subsystem: "websocket",
+			Name:      "send_errors_total",
+			Help:      "Total WebSocket send errors",
+		},
+		[]string{"tenant"},
+	)
+
+	// WebSocket reconnection counter
+	WebSocketReconnections = promauto.NewCounterVec(
+		prometheus.CounterOpts{
+			Namespace: "hospitality",
+			Subsystem: "websocket",
+			Name:      "reconnections_total",
+			Help:      "Total WebSocket reconnection attempts",
+		},
+		[]string{"tenant"},
 	)
 )
