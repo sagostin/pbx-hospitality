@@ -54,6 +54,18 @@ func NewRouterWithDB(tm *tenant.Manager, cfg *config.Config, database *db.DB) ht
 	// Prometheus metrics
 	r.Handle("/metrics", promhttp.Handler())
 
+	// Admin API routes (protected by X-Admin-Key)
+	admin := &AdminServer{Server: s}
+	r.Route("/admin/tenants", func(r chi.Router) {
+		r.Use(adminKeyMiddleware(cfg.Server.AdminAPIKey))
+		r.Get("/", admin.listTenants)
+		r.Get("/{id}", admin.getTenant)
+		r.Post("/", admin.createTenant)
+		r.Put("/{id}", admin.updateTenant)
+		r.Delete("/{id}", admin.deleteTenant)
+		r.Post("/import", admin.importTenants)
+	})
+
 	// API routes
 	r.Route("/api/v1", func(r chi.Router) {
 		// Tenant endpoints
