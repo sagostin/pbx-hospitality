@@ -46,12 +46,18 @@ type TenantConfig struct {
 
 // PMSConfig holds PMS connection settings
 type PMSConfig struct {
-	Protocol string `yaml:"protocol"` // "mitel" or "fias"
+	Protocol string `yaml:"protocol"` // "mitel", "fias", or "tigertms"
 	Host     string `yaml:"host"`
 	Port     int    `yaml:"port"`
 	// Optional serial settings for Mitel
 	SerialPort string `yaml:"serial_port,omitempty"`
 	BaudRate   int    `yaml:"baud_rate,omitempty"`
+	// TigerTMS-specific settings
+	// PathPrefix is the URL path prefix for this tenant's TigerTMS endpoints
+	// e.g., "/tigertms/hotel-gamma"
+	PathPrefix string `yaml:"path_prefix,omitempty"`
+	// AuthToken is the bearer token for TigerTMS authentication
+	AuthToken string `yaml:"auth_token,omitempty"`
 }
 
 // PBXConfig holds PBX provider settings

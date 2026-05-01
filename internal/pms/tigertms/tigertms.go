@@ -5,6 +5,7 @@ package tigertms
 import (
 	"context"
 	"encoding/json"
+	"fmt"
 	"net/http"
 	"sync"
 	"time"
@@ -141,6 +142,8 @@ func (h *Handler) Routes() chi.Router {
 	r.Post("/API/setddi", h.handleSetDDI)
 	r.Post("/API/setdnd", h.handleSetDND)
 	r.Post("/API/setwakeup", h.handleSetWakeup)
+	// CDR billing endpoint (outbound from PBX to TigerTMS)
+	r.Post("/API/CDR", h.handleCDR)
 
 	return r
 }
@@ -390,6 +393,61 @@ func (h *Handler) handleSetWakeup(w http.ResponseWriter, r *http.Request) {
 		Msg("TigerTMS wakeup event")
 
 	writeSuccess(w, "Wakeup call scheduled")
+}
+
+// CDRData represents Call Detail Record data from the PBX
+type CDRData struct {
+	Src        string `json:"src"`
+	Dst        string `json:"dst"`
+	Start      string `json:"start"`
+	Duration   int    `json:"duration"`
+	Billsec    int    `json:"billsec"`
+	Disposition string `json:"disposition"`
+}
+
+// handleCDR handles Call Detail Record billing data from PBX
+// POST /API/CDR
+// This endpoint receives CDR data from the PBX and forwards it to TigerTMS
+// for billing integration with the hotel PMS.
+func (h *Handler) handleCDR(w http.ResponseWriter, r *http.Request) {
+	if r.Header.Get("Content-Type") != "application/json" {
+		writeError(w, http.StatusBadRequest, "INVALID_CONTENT_TYPE", "application/json required")
+		return
+	}
+
+	var cdr CDRData
+	if err := json.NewDecoder(r.Body).Decode(&cdr); err != nil {
+		writeError(w, http.StatusBadRequest, "INVALID_JSON", "failed to parse CDR data")
+		return
+	}
+
+	log.Info().
+		Str("src", cdr.Src).
+		Str("dst", cdr.Dst).
+		Str("start", cdr.Start).
+		Int("duration", cdr.Duration).
+		Int("billsec", cdr.Billsec).
+		Str("disposition", cdr.Disposition).
+		Msg("TigerTMS CDR received")
+
+	// Emit a CDR event for downstream processing (e.g., posting to external billing)
+	evt := pms.Event{
+		Type:      pms.EventRoomStatus, // CDR is a billing event
+		Room:      cdr.Src,
+		Timestamp: time.Now(),
+		Metadata: map[string]string{
+			"source":      "tigertms",
+			"cdr_dst":     cdr.Dst,
+			"cdr_start":   cdr.Start,
+			"cdr_duration": fmt.Sprintf("%d", cdr.Duration),
+			"cdr_billsec": fmt.Sprintf("%d", cdr.Billsec),
+			"cdr_disposition": cdr.Disposition,
+		},
+	}
+
+	h.sendEvent(evt)
+
+	writeSuccess(w, "CDR processed")
 }
 
 // sendEvent sends an event to the adapter's event channel
