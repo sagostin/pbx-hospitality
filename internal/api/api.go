@@ -83,24 +83,36 @@ func NewRouterWithDB(tm *tenant.Manager, cfg *config.Config, database *db.DB) ht
 	})
 
 	// Register TigerTMS HTTP handlers for tenants with tigertms PMS protocol
-	for _, tc := range cfg.Tenants {
-		if tc.PMS.Protocol == "tigertms" {
-			// Create a TigerTMS adapter (host/port are not used for HTTP server, pass 0)
-			adapter, err := pms.NewAdapter("tigertms", "", 0, tigertms.WithAuthToken(tc.PMS.AuthToken))
-			if err != nil {
-				log.Error().Err(err).Str("tenant", tc.ID).Msg("Failed to create TigerTMS adapter for API router")
-				continue
-			}
-			tigerAdapter, ok := adapter.(*tigertms.Adapter)
-			if !ok {
-				log.Error().Str("tenant", tc.ID).Msg("TigerTMS adapter is wrong type")
-				continue
-			}
-			handler := tigertms.NewHandler(tigerAdapter)
-			// Store the chi.Router (which implements http.Handler), not the Handler wrapper
-			s.tigertmsHandlers[tc.ID] = handler.Routes()
+	// Load tenants from database to register their HTTP handlers
+	if database != nil {
+		tenants, err := database.ListTenants(r.Context())
+		if err == nil {
+			for _, t := range tenants {
+				if !t.Enabled {
+					continue
+				}
+				protocol, _ := t.PMSConfig["protocol"].(string)
+				if protocol == "tigertms" {
+					authToken, _ := t.PMSConfig["auth_token"].(string)
+					pathPrefix, _ := t.PMSConfig["path_prefix"].(string)
+					// Create a TigerTMS adapter (host/port are not used for HTTP server, pass 0)
+					adapter, err := pms.NewAdapter("tigertms", "", 0, tigertms.WithAuthToken(authToken))
+					if err != nil {
+						log.Error().Err(err).Str("tenant", t.ID).Msg("Failed to create TigerTMS adapter for API router")
+						continue
+					}
+					tigerAdapter, ok := adapter.(*tigertms.Adapter)
+					if !ok {
+						log.Error().Str("tenant", t.ID).Msg("TigerTMS adapter is wrong type")
+						continue
+					}
+					handler := tigertms.NewHandler(tigerAdapter)
+					// Store the chi.Router (which implements http.Handler), not the Handler wrapper
+					s.tigertmsHandlers[t.ID] = handler.Routes()
 
-			log.Info().Str("tenant", tc.ID).Str("path_prefix", tc.PMS.PathPrefix).Msg("TigerTMS HTTP handler registered")
+					log.Info().Str("tenant", t.ID).Str("path_prefix", pathPrefix).Msg("TigerTMS HTTP handler registered")
+				}
+			}
 		}
 	}
 

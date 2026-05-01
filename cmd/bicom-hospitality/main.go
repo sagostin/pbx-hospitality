@@ -87,9 +87,14 @@ func main() {
 	}
 
 	// Initialize tenant manager
-	tm, err := tenant.NewManager(cfg, database)
+	tm, err := tenant.NewManager(database)
 	if err != nil {
 		log.Fatal().Err(err).Msg("Failed to initialize tenant manager")
+	}
+
+	// Load tenants from database
+	if err := tm.LoadFromDB(ctx); err != nil {
+		log.Fatal().Err(err).Msg("Failed to load tenants from database")
 	}
 
 	// Start all tenants
@@ -119,9 +124,6 @@ func main() {
 			log.Fatal().Err(err).Msg("HTTP server failed")
 		}
 	}()
-
-	// Start config reload handler (SIGHUP)
-	go handleConfigReload(tm)
 
 	// Wait for interrupt signal
 	quit := make(chan os.Signal, 1)
@@ -177,9 +179,15 @@ func runHealthCheck(cfg *config.Config) int {
 	}
 
 	// Initialize tenant manager
-	tm, err := tenant.NewManager(cfg, database)
+	tm, err := tenant.NewManager(database)
 	if err != nil {
 		log.Error().Err(err).Msg("Health check: failed to initialize tenant manager")
+		return 1
+	}
+
+	// Load tenants from DB
+	if err := tm.LoadFromDB(ctx); err != nil {
+		log.Error().Err(err).Msg("Health check: failed to load tenants from DB")
 		return 1
 	}
 
@@ -195,29 +203,4 @@ func runHealthCheck(cfg *config.Config) int {
 
 	log.Info().Msg("Health check passed")
 	return 0
-}
-
-// handleConfigReload listens for SIGHUP and reloads configuration
-func handleConfigReload(tm *tenant.Manager) {
-	sighup := make(chan os.Signal, 1)
-	signal.Notify(sighup, syscall.SIGHUP)
-
-	for {
-		<-sighup
-		log.Info().Msg("Received SIGHUP, reloading configuration...")
-
-		newCfg, err := config.Load()
-		if err != nil {
-			log.Error().Err(err).Msg("Failed to reload configuration")
-			continue
-		}
-
-		// Reload tenant configurations
-		if err := tm.Reload(newCfg); err != nil {
-			log.Error().Err(err).Msg("Failed to reload tenants")
-			continue
-		}
-
-		log.Info().Int("tenants", len(newCfg.Tenants)).Msg("Configuration reloaded successfully")
-	}
 }
