@@ -260,6 +260,57 @@ func (c *Client) UpdateServicePlan(ctx context.Context, extensionID, servicePlan
 	return nil
 }
 
+// AddExtension creates a new extension for the tenant.
+// This is used for dynamic room provisioning where extensions are created
+// on check-in and removed on check-out rather than pre-provisioned.
+// Required params: name, ext (extension number), prot (protocol, e.g. "sip").
+// Optional: email, secret, pin, voicemail, status, incominglimit, outgoinglimit,
+// service_plan, and other PBXware extension attributes.
+func (c *Client) AddExtension(ctx context.Context, params map[string]string) (*Extension, error) {
+	resp, err := c.doPost(ctx, "pbxware.ext.add", params)
+	if err != nil {
+		return nil, err
+	}
+
+	if !resp.Success {
+		return nil, fmt.Errorf("failed to add extension: %s", resp.Message)
+	}
+
+	var ext Extension
+	if err := json.Unmarshal(resp.Data, &ext); err != nil {
+		// API may return just an ID or a full Extension object
+		return nil, fmt.Errorf("parsing added extension: %w", err)
+	}
+
+	log.Info().
+		Str("extension", ext.Extension).
+		Str("name", ext.Name).
+		Msg("Extension created")
+
+	return &ext, nil
+}
+
+// DeleteExtension removes an extension from the tenant.
+// The extensionID is the PBXware internal ID (not the dialed extension number).
+func (c *Client) DeleteExtension(ctx context.Context, extensionID string) error {
+	resp, err := c.doPost(ctx, "pbxware.ext.delete", map[string]string{
+		"id": extensionID,
+	})
+	if err != nil {
+		return err
+	}
+
+	if !resp.Success {
+		return fmt.Errorf("failed to delete extension: %s", resp.Message)
+	}
+
+	log.Info().
+		Str("extension", extensionID).
+		Msg("Extension deleted")
+
+	return nil
+}
+
 // =============================================================================
 // Wake-Up Call Management
 // =============================================================================

@@ -180,17 +180,22 @@ func (c *Client) SetDND(ctx context.Context, extension string, on bool) error {
 		return fmt.Errorf("not connected to ARI")
 	}
 
-	// DND is typically a device state or feature code
-	// This is a placeholder - actual implementation depends on Bicom's capabilities
+	// Use device state: Custom:DND<extension>
+	// INUSE = DND enabled, NOT_INUSE = DND disabled
+	deviceKey := arilib.NewKey(arilib.DeviceStateKey, "Custom:DND"+extension)
+	state := "NOT_INUSE"
+	if on {
+		state = "INUSE"
+	}
+
+	if err := c.client.DeviceState().Update(deviceKey, state); err != nil {
+		return fmt.Errorf("updating device state for DND: %w", err)
+	}
+
 	log.Debug().
 		Str("extension", extension).
 		Bool("on", on).
-		Msg("SetDND called (placeholder)")
-
-	// TODO: Implement via:
-	// 1. Device state: DEVICE_STATE(Custom:DND<extension>)
-	// 2. Feature code execution
-	// 3. Bicom API call
+		Msg("DND updated via device state")
 
 	return nil
 }

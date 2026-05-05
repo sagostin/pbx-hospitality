@@ -7,6 +7,8 @@ toolchain go1.24.11
 require (
 	github.com/CyCoreSystems/ari/v6 v6.0.0-20251024161400-681c62bc07e7
 	github.com/go-chi/chi/v5 v5.2.3
+	github.com/google/uuid v1.6.0
+	github.com/gorilla/websocket v1.5.3
 	github.com/jackc/pgx/v5 v5.8.0
 	github.com/prometheus/client_golang v1.23.2
 	github.com/rs/zerolog v1.34.0

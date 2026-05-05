@@ -4,6 +4,7 @@ import (
 	"encoding/json"
 	"net/http"
 	"strconv"
+	"time"
 
 	"github.com/go-chi/chi/v5"
 	"github.com/go-chi/chi/v5/middleware"
@@ -114,13 +115,21 @@ func NewRouterWithDB(tm *tenant.Manager, cfg *config.Config, database *db.DB) ht
 }
 
 func (s *Server) health(w http.ResponseWriter, r *http.Request) {
+	w.Header().Set("Cache-Control", "no-cache, no-store, must-revalidate")
+	w.Header().Set("Pragma", "no-cache")
+	w.Header().Set("Expires", "0")
+	w.Header().Set("Content-Type", "application/json")
+
 	status := map[string]interface{}{
-		"status": "ok",
+		"status":    "ok",
+		"timestamp": time.Now().UTC().Format(time.RFC3339),
 	}
 
+	// Database status
 	if s.db != nil {
 		if err := s.db.Pool().Ping(r.Context()); err != nil {
 			status["database"] = "error"
+			status["status"] = "degraded"
 		} else {
 			status["database"] = "connected"
 		}
@@ -128,7 +137,39 @@ func (s *Server) health(w http.ResponseWriter, r *http.Request) {
 		status["database"] = "not configured"
 	}
 
-	w.Header().Set("Content-Type", "application/json")
+	// Per-tenant connector status
+	tenants := s.tm.List()
+	if len(tenants) > 0 {
+		tenantStatuses := make(map[string]interface{})
+		overallHealthy := true
+
+		for _, id := range tenants {
+			if t, ok := s.tm.Get(id); ok {
+				ts := t.Status()
+				tenantStatus := map[string]interface{}{
+					"name":              ts.Name,
+					"pms_connected":     ts.PMSConnected,
+					"pbx_connected":     ts.PBXConnected,
+					"cloud_connected":   ts.PBXConnected, // PBX is the cloud connection
+					"queue_depth":        0,              // Would need event queue tracking
+					"reconnect_count":   ts.ReconnectCount,
+				}
+				tenantStatuses[id] = tenantStatus
+
+				// Mark degraded if any connection is down
+				if !ts.PMSConnected || !ts.PBXConnected {
+					overallHealthy = false
+				}
+			}
+		}
+
+		status["tenants"] = tenantStatuses
+
+		if !overallHealthy && status["status"] == "ok" {
+			status["status"] = "degraded"
+		}
+	}
+
 	json.NewEncoder(w).Encode(status)
 }
 

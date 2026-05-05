@@ -54,6 +54,7 @@ type TenantConfig struct {
 	Name       string    `yaml:"name"`
 	PMS        PMSConfig `yaml:"pms"`
 	PBX        PBXConfig `yaml:"pbx"`
+	Cloud      CloudConfig `yaml:"cloud"`
 	RoomPrefix string    `yaml:"room_prefix"`
 	// Timezone for wake-up calls and event timestamps (e.g., "America/New_York")
 	Timezone string `yaml:"timezone"`
@@ -61,6 +62,20 @@ type TenantConfig struct {
 	Region string `yaml:"region"`
 	// Enabled allows disabling a tenant without removing config
 	Enabled *bool `yaml:"enabled,omitempty"`
+}
+
+// CloudConfig holds WebSocket bridge settings for cloud platform integration
+type CloudConfig struct {
+	// Enabled enables WebSocket forwarding to cloud platform
+	Enabled bool `yaml:"enabled"`
+	// URL is the WebSocket endpoint (wss://...)
+	URL string `yaml:"url"`
+	// AuthToken is the bearer token for authentication
+	AuthToken string `yaml:"auth_token,omitempty"`
+	// ReconnectBaseDelay is the base delay for exponential backoff reconnection
+	ReconnectBaseDelay string `yaml:"reconnect_base_delay,omitempty"`
+	// ReconnectMaxDelay is the maximum delay cap for exponential backoff
+	ReconnectMaxDelay string `yaml:"reconnect_max_delay,omitempty"`
 }
 
 // PMSConfig holds PMS connection settings
@@ -77,6 +92,14 @@ type PMSConfig struct {
 	PathPrefix string `yaml:"path_prefix,omitempty"`
 	// AuthToken is the bearer token for TigerTMS authentication
 	AuthToken string `yaml:"auth_token,omitempty"`
+
+	// Socket-binding mode: the integration service binds a local TCP socket
+	// and the PMS connects to this socket. Use ListenHost/ListenPort instead
+	// of Host/Port. If AllowedPMSIPs is non-empty, only connections from
+	// these IPs will be accepted.
+	ListenHost      string   `yaml:"listen_host,omitempty"`
+	ListenPort      int      `yaml:"listen_port,omitempty"`
+	AllowedPMSIPs   []string `yaml:"allowed_pms_ips,omitempty"`
 }
 
 // PBXConfig holds PBX provider settings

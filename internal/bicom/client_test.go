@@ -284,3 +284,124 @@ func TestClearVoicemailForGuest(t *testing.T) {
 		}
 	})
 }
+
+func TestAddExtension(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.FormValue("action") != "pbxware.ext.add" {
+			t.Errorf("unexpected action: %s", r.FormValue("action"))
+		}
+		if r.FormValue("name") != "Room 101" {
+			t.Errorf("unexpected name: %s", r.FormValue("name"))
+		}
+		if r.FormValue("ext") != "1001" {
+			t.Errorf("unexpected ext: %s", r.FormValue("ext"))
+		}
+		if r.FormValue("prot") != "sip" {
+			t.Errorf("unexpected prot: %s", r.FormValue("prot"))
+		}
+
+		w.Header().Set("Content-Type", "application/json")
+		json.NewEncoder(w).Encode(APIResponse{
+			Success: true,
+			Data:    json.RawMessage(`{"id": "5", "extension": "1001", "name": "Room 101"}`),
+		})
+	}))
+	defer server.Close()
+
+	client, _ := NewClient(Config{
+		BaseURL: server.URL,
+		APIKey:  "test-key",
+	})
+
+	ext, err := client.AddExtension(context.Background(), map[string]string{
+		"name": "Room 101",
+		"ext":  "1001",
+		"prot": "sip",
+	})
+	if err != nil {
+		t.Errorf("AddExtension() error = %v", err)
+	}
+	if ext == nil {
+		t.Fatal("expected extension, got nil")
+	}
+	if ext.ID != "5" {
+		t.Errorf("expected ID=5, got %s", ext.ID)
+	}
+	if ext.Extension != "1001" {
+		t.Errorf("expected Extension=1001, got %s", ext.Extension)
+	}
+}
+
+func TestAddExtensionFailure(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		json.NewEncoder(w).Encode(APIResponse{
+			Success: false,
+			Message: "extension number already exists",
+		})
+	}))
+	defer server.Close()
+
+	client, _ := NewClient(Config{
+		BaseURL: server.URL,
+		APIKey:  "test-key",
+	})
+
+	_, err := client.AddExtension(context.Background(), map[string]string{
+		"name": "Room 101",
+		"ext":  "1001",
+		"prot": "sip",
+	})
+	if err == nil {
+		t.Fatal("expected error, got nil")
+	}
+}
+
+func TestDeleteExtension(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.FormValue("action") != "pbxware.ext.delete" {
+			t.Errorf("unexpected action: %s", r.FormValue("action"))
+		}
+		if r.FormValue("id") != "5" {
+			t.Errorf("unexpected id: %s", r.FormValue("id"))
+		}
+
+		w.Header().Set("Content-Type", "application/json")
+		json.NewEncoder(w).Encode(APIResponse{
+			Success: true,
+			Message: "Extension deleted",
+		})
+	}))
+	defer server.Close()
+
+	client, _ := NewClient(Config{
+		BaseURL: server.URL,
+		APIKey:  "test-key",
+	})
+
+	err := client.DeleteExtension(context.Background(), "5")
+	if err != nil {
+		t.Errorf("DeleteExtension() error = %v", err)
+	}
+}
+
+func TestDeleteExtensionFailure(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		json.NewEncoder(w).Encode(APIResponse{
+			Success: false,
+			Message: "extension not found",
+		})
+	}))
+	defer server.Close()
+
+	client, _ := NewClient(Config{
+		BaseURL: server.URL,
+		APIKey:  "test-key",
+	})
+
+	err := client.DeleteExtension(context.Background(), "999")
+	if err == nil {
+		t.Fatal("expected error, got nil")
+	}
+}
