@@ -30,15 +30,14 @@ import (
 	"os"
 	"os/signal"
 	"syscall"
+	"time"
 
 	"github.com/rs/zerolog"
 	"github.com/rs/zerolog/log"
 
 	"github.com/sagostin/pbx-hospitality/internal/config"
+	"github.com/sagostin/pbx-hospitality/internal/output"
 	"github.com/sagostin/pbx-hospitality/internal/pms"
-	// Import listener package to trigger its init() registrations.
-	// The listener package registers both "fias" and "mitel" protocols
-	// with pms.ListenerRegistry on import.
 	_ "github.com/sagostin/pbx-hospitality/internal/pms/listener"
 )
 
@@ -91,8 +90,9 @@ func main() {
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
 
-	// Start all listeners
 	listeners := make([]pms.Listener, 0, len(cfg.SiteConnectors))
+	outputs := make([]*output.ResilientOutput, 0, len(cfg.SiteConnectors))
+
 	for _, sc := range cfg.SiteConnectors {
 		events := make(chan pms.Event, 100)
 		l, err := pms.NewListener(sc.Protocol, pms.ListenerConfig{
@@ -107,7 +107,29 @@ func main() {
 				Msg("Failed to create listener")
 		}
 
-		// Start listener in background
+		var out *output.ResilientOutput
+		if sc.Output.URL != "" {
+			outCfg := output.OutputConfig{
+				URL:                 sc.Output.URL,
+				UseWebsocket:        sc.Output.UseWebsocket,
+				BufferEnabled:       sc.Output.BufferEnabled,
+				BufferDir:           sc.Output.BufferDir,
+				BufferMaxSize:       sc.Output.BufferMaxSizeMB * 1024 * 1024,
+				BatchEnabled:        sc.Output.BatchEnabled,
+				BatchSize:           sc.Output.BatchSize,
+				BatchTimeout:        time.Duration(sc.Output.BatchTimeoutSeconds) * time.Second,
+				BackpressureEnabled: sc.Output.BackpressureEnabled,
+			}
+			out, err = output.NewResilientOutput(outCfg)
+			if err != nil {
+				log.Fatal().
+					Err(err).
+					Str("protocol", sc.Protocol).
+					Msg("Failed to create resilient output")
+			}
+			outputs = append(outputs, out)
+		}
+
 		go func(proto string, listener pms.Listener, evts <-chan pms.Event) {
 			log.Info().
 				Str("protocol", proto).
@@ -122,8 +144,7 @@ func main() {
 			}
 		}(sc.Protocol, l, events)
 
-		// Also pump events to stdout
-		go func(proto string, evts <-chan pms.Event) {
+		go func(proto string, evts <-chan pms.Event, out *output.ResilientOutput) {
 			for {
 				select {
 				case <-ctx.Done():
@@ -132,21 +153,41 @@ func main() {
 					if !ok {
 						return
 					}
-					emitJSON, _ := json.Marshal(map[string]any{
-						"protocol": proto,
-						"event": map[string]any{
+					evtEnv := output.EventEnvelope{
+						Protocol: proto,
+						Event: map[string]interface{}{
 							"type":       evt.Type.String(),
 							"room":       evt.Room,
 							"guest_name": evt.GuestName,
 							"status":     evt.Status,
 							"timestamp":  evt.Timestamp.Format("2006-01-02T15:04:05Z"),
 						},
-					})
-					os.Stdout.Write(emitJSON)
-					os.Stdout.Write([]byte("\n"))
+					}
+					if out != nil {
+						if err := out.Write(evtEnv); err != nil {
+							log.Warn().
+								Err(err).
+								Str("protocol", proto).
+								Str("room", evt.Room).
+								Msg("Failed to write event")
+						}
+					} else {
+						emitJSON, _ := json.Marshal(map[string]any{
+							"protocol": proto,
+							"event": map[string]any{
+								"type":       evt.Type.String(),
+								"room":       evt.Room,
+								"guest_name": evt.GuestName,
+								"status":     evt.Status,
+								"timestamp":  evt.Timestamp.Format("2006-01-02T15:04:05Z"),
+							},
+						})
+						os.Stdout.Write(emitJSON)
+						os.Stdout.Write([]byte("\n"))
+					}
 				}
 			}
-		}(sc.Protocol, events)
+		}(sc.Protocol, events, out)
 
 		listeners = append(listeners, l)
 	}
@@ -160,7 +201,12 @@ func main() {
 
 	log.Info().Msg("Shutting down...")
 
-	// Stop all listeners
+	for _, out := range outputs {
+		if err := out.Close(); err != nil {
+			log.Error().Err(err).Msg("Error closing output")
+		}
+	}
+
 	for _, l := range listeners {
 		if err := l.Close(); err != nil {
 			log.Error().Err(err).Msg("Error closing listener")

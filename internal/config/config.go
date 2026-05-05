@@ -23,15 +23,23 @@ type Config struct {
 // pms.ListenerRegistry, so the protocol must be one that has called
 // pms.RegisterListener in its init() function.
 type SiteConnectorConfig struct {
-	// Protocol identifies the listener implementation (e.g. "fias", "mitel").
 	Protocol string `yaml:"protocol"`
-	// ListenHost is the address to bind (empty = all interfaces).
 	ListenHost string `yaml:"listen_host"`
-	// ListenPort is the TCP port to listen on.
 	ListenPort int `yaml:"listen_port"`
-	// AllowedPMSIPs is an optional IP allowlist; if non-empty, only
-	// connections from these IPs will be accepted.
 	AllowedPMSIPs []string `yaml:"allowed_pms_ips,omitempty"`
+	Output OutputConfig `yaml:"output"`
+}
+
+type OutputConfig struct {
+	URL                 string `yaml:"url"`
+	UseWebsocket        bool   `yaml:"use_websocket"`
+	BufferEnabled       bool   `yaml:"buffer_enabled"`
+	BufferDir           string `yaml:"buffer_dir"`
+	BufferMaxSizeMB     int64  `yaml:"buffer_max_size_mb"`
+	BatchEnabled        bool   `yaml:"batch_enabled"`
+	BatchSize           int    `yaml:"batch_size"`
+	BatchTimeoutSeconds int    `yaml:"batch_timeout_seconds"`
+	BackpressureEnabled bool   `yaml:"backpressure_enabled"`
 }
 
 // ServerConfig holds HTTP server settings
