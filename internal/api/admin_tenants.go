@@ -8,9 +8,7 @@ import (
 	"github.com/gofiber/fiber/v2"
 	"github.com/rs/zerolog/log"
 
-	"github.com/sagostin/pbx-hospitality/internal/config"
 	"github.com/sagostin/pbx-hospitality/internal/db"
-	"github.com/sagostin/pbx-hospitality/internal/tenant"
 )
 
 type AdminServer struct {
@@ -166,7 +164,7 @@ func (s *AdminServer) createTenant(c *fiber.Ctx) error {
 		return writeError(c, "failed to create tenant", "INTERNAL_ERROR", fiber.StatusInternalServerError)
 	}
 
-	if err := s.tm.ReloadFromDB(); err != nil {
+	if err := s.tm.ReloadFromDB(c.Context()); err != nil {
 		log.Warn().Err(err).Str("tenant", req.ID).Msg("Failed to reload tenant manager after create")
 	}
 
@@ -232,7 +230,7 @@ func (s *AdminServer) updateTenant(c *fiber.Ctx) error {
 		return writeError(c, "failed to update tenant", "INTERNAL_ERROR", fiber.StatusInternalServerError)
 	}
 
-	if err := s.tm.ReloadFromDB(); err != nil {
+	if err := s.tm.ReloadFromDB(c.Context()); err != nil {
 		log.Warn().Err(err).Str("tenant", id).Msg("Failed to reload tenant manager after update")
 	}
 
@@ -278,7 +276,7 @@ func (s *AdminServer) importTenants(c *fiber.Ctx) error {
 		return writeError(c, "database not configured", "DB_NOT_CONFIGURED", fiber.StatusServiceUnavailable)
 	}
 
-	body, err := io.ReadAll(c.Request().Body)
+	body, err := io.ReadAll(c.Request().BodyStream())
 	if err != nil {
 		return writeError(c, "failed to read request body", "INVALID_BODY", fiber.StatusBadRequest)
 	}
@@ -335,7 +333,7 @@ func (s *AdminServer) importTenants(c *fiber.Ctx) error {
 		created++
 	}
 
-	if err := s.tm.ReloadFromDB(); err != nil {
+	if err := s.tm.ReloadFromDB(c.Context()); err != nil {
 		log.Warn().Err(err).Msg("Failed to reload tenant manager after import")
 	}
 
