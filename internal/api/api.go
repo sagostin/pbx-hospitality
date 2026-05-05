@@ -6,8 +6,11 @@ import (
 	"strconv"
 	"time"
 
-	"github.com/go-chi/chi/v5"
-	"github.com/go-chi/chi/v5/middleware"
+	"github.com/gofiber/fiber/v2"
+	"github.com/gofiber/fiber/v2/middleware/adaptor"
+	"github.com/gofiber/fiber/v2/middleware/logger"
+	"github.com/gofiber/fiber/v2/middleware/recover"
+	"github.com/gofiber/fiber/v2/middleware/requestid"
 	"github.com/prometheus/client_golang/prometheus/promhttp"
 	"github.com/rs/zerolog/log"
 
@@ -19,85 +22,63 @@ import (
 	"github.com/sagostin/pbx-hospitality/internal/tenant"
 )
 
-// Server holds API dependencies
 type Server struct {
 	tm               *tenant.Manager
 	cfg              *config.Config
-	db               *db.DB              // May be nil if DB not configured
-	tigertmsHandlers map[string]http.Handler // tenant ID -> Tigertms HTTP handler
+	db               *db.DB
+	tigertmsHandlers map[*fiber.App]string
 }
 
-// NewRouter creates the HTTP router with all endpoints
 func NewRouter(tm *tenant.Manager, cfg *config.Config) http.Handler {
 	return NewRouterWithDB(tm, cfg, nil)
 }
 
-// NewRouterWithDB creates the HTTP router with database support
 func NewRouterWithDB(tm *tenant.Manager, cfg *config.Config, database *db.DB) http.Handler {
 	s := &Server{
 		tm:               tm,
 		cfg:              cfg,
 		db:               database,
-		tigertmsHandlers: make(map[string]http.Handler),
+		tigertmsHandlers: make(map[*fiber.App]string),
 	}
-	r := chi.NewRouter()
+	app := fiber.New(fiber.Config{
+		DisableStartupMessage: true,
+	})
 
-	// Middleware
-	r.Use(middleware.RequestID)
-	r.Use(middleware.RealIP)
-	r.Use(middleware.Logger)
-	r.Use(middleware.Recoverer)
+	app.Use(recover.New())
+	app.Use(requestid.New())
+	app.Use(logger.New())
 
-	// Health check
-	r.Get("/health", s.health)
+	app.Get("/health", s.health)
 
-	// Prometheus metrics
-	r.Handle("/metrics", promhttp.Handler())
+	app.Get("/metrics", adaptor.HTTPHandler(promhttp.Handler()))
 
-	// Admin API routes (protected by X-Admin-Key)
 	admin := &AdminServer{Server: s}
-	r.Route("/admin/tenants", func(r chi.Router) {
-		r.Use(adminKeyMiddleware(cfg.Server.AdminAPIKey))
-		r.Get("/", admin.listTenants)
-		r.Get("/{id}", admin.getTenant)
-		r.Post("/", admin.createTenant)
-		r.Put("/{id}", admin.updateTenant)
-		r.Delete("/{id}", admin.deleteTenant)
-		r.Post("/import", admin.importTenants)
-	})
+	adminGroup := app.Group("/admin/tenants")
+	adminGroup.Use(adminKeyMiddleware(cfg.Server.AdminAPIKey))
+	adminGroup.Get("/", admin.listTenants)
+	adminGroup.Get("/:id", admin.getTenant)
+	adminGroup.Post("/", admin.createTenant)
+	adminGroup.Put("/:id", admin.updateTenant)
+	adminGroup.Delete("/:id", admin.deleteTenant)
+	adminGroup.Post("/import", admin.importTenants)
 
-	// API routes
-	r.Route("/api/v1", func(r chi.Router) {
-		// Tenant endpoints
-		r.Route("/tenants", func(r chi.Router) {
-			r.Get("/", s.listTenants)
-			r.Get("/{id}", s.getTenant)
-			r.Get("/{id}/status", s.getTenantStatus)
+	apiV1 := app.Group("/api/v1")
+	tenants := apiV1.Group("/tenants")
+	tenants.Get("/", s.listTenants)
+	tenants.Get("/:id", s.getTenant)
+	tenants.Get("/:id/status", s.getTenantStatus)
+	tenants.Get("/:id/rooms", s.listRooms)
+	tenants.Post("/:id/rooms", s.createRoomMapping)
+	tenants.Get("/:id/sessions", s.listActiveSessions)
+	tenants.Post("/:id/sessions", s.createSession)
+	tenants.Get("/:id/sessions/:room", s.getSession)
+	tenants.Delete("/:id/sessions/:room", s.endSession)
+	tenants.Get("/:id/events", s.listEvents)
 
-			// Room mappings (requires DB)
-			r.Get("/{id}/rooms", s.listRooms)
-			r.Post("/{id}/rooms", s.createRoomMapping)
+	apiV1.Post("/pbx/webhook/:tenant", s.handlePBXWebhook)
 
-			// Guest sessions (requires DB)
-			r.Get("/{id}/sessions", s.listActiveSessions)
-			r.Post("/{id}/sessions", s.createSession)
-			r.Get("/{id}/sessions/{room}", s.getSession)
-			r.Delete("/{id}/sessions/{room}", s.endSession)
-
-			// PMS event history (requires DB)
-			r.Get("/{id}/events", s.listEvents)
-		})
-
-		// PBX webhook endpoints for receiving inbound call events
-		r.Route("/pbx", func(r chi.Router) {
-			r.Post("/webhook/{tenant}", s.handlePBXWebhook)
-		})
-	})
-
-	// Register TigerTMS HTTP handlers for tenants with tigertms PMS protocol
-	// Load tenants from database to register their HTTP handlers
 	if database != nil {
-		tenants, err := database.ListTenants(r.Context())
+		tenants, err := database.ListTenants(nil)
 		if err == nil {
 			for _, t := range tenants {
 				if !t.Enabled {
@@ -107,7 +88,6 @@ func NewRouterWithDB(tm *tenant.Manager, cfg *config.Config, database *db.DB) ht
 				if protocol == "tigertms" {
 					authToken, _ := t.PMSConfig["auth_token"].(string)
 					pathPrefix, _ := t.PMSConfig["path_prefix"].(string)
-					// Create a TigerTMS adapter (host/port are not used for HTTP server, pass 0)
 					adapter, err := pms.NewAdapter("tigertms", "", 0, tigertms.WithAuthToken(authToken))
 					if err != nil {
 						log.Error().Err(err).Str("tenant", t.ID).Msg("Failed to create TigerTMS adapter for API router")
@@ -119,8 +99,9 @@ func NewRouterWithDB(tm *tenant.Manager, cfg *config.Config, database *db.DB) ht
 						continue
 					}
 					handler := tigertms.NewHandler(tigerAdapter)
-					// Store the chi.Router (which implements http.Handler), not the Handler wrapper
-					s.tigertmsHandlers[t.ID] = handler.Routes()
+					fiberApp := fiber.New()
+					handler.Routes(fiberApp)
+					s.tigertmsHandlers[fiberApp] = t.ID
 
 					log.Info().Str("tenant", t.ID).Str("path_prefix", pathPrefix).Msg("TigerTMS HTTP handler registered")
 				}
@@ -128,30 +109,24 @@ func NewRouterWithDB(tm *tenant.Manager, cfg *config.Config, database *db.DB) ht
 		}
 	}
 
-	// TigerTMS HTTP endpoints: /tigertms/{tenant}/API/*
-	// Each tenant gets its own subrouter rooted at /tigertms/{tenant}
-	r.Route("/tigertms/{tenant}", func(r chi.Router) {
-		// All TigerTMS API endpoints (including CDR) are handled by the tigertms.Handler
-		r.Post("/API/*", s.handleTigerTMS)
-	})
+	app.Post("/tigertms/:tenant/API/*", s.handleTigerTMS)
 
-	return r
+	return app
 }
 
-func (s *Server) health(w http.ResponseWriter, r *http.Request) {
-	w.Header().Set("Cache-Control", "no-cache, no-store, must-revalidate")
-	w.Header().Set("Pragma", "no-cache")
-	w.Header().Set("Expires", "0")
-	w.Header().Set("Content-Type", "application/json")
+func (s *Server) health(c *fiber.Ctx) error {
+	c.Set("Cache-Control", "no-cache, no-store, must-revalidate")
+	c.Set("Pragma", "no-cache")
+	c.Set("Expires", "0")
+	c.Set("Content-Type", "application/json")
 
 	status := map[string]interface{}{
 		"status":    "ok",
 		"timestamp": time.Now().UTC().Format(time.RFC3339),
 	}
 
-	// Database status
 	if s.db != nil {
-		if err := s.db.Pool().Ping(r.Context()); err != nil {
+		if err := s.db.Pool().Ping(c.Context()); err != nil {
 			status["database"] = "error"
 			status["status"] = "degraded"
 		} else {
@@ -161,7 +136,6 @@ func (s *Server) health(w http.ResponseWriter, r *http.Request) {
 		status["database"] = "not configured"
 	}
 
-	// Per-tenant connector status
 	tenants := s.tm.List()
 	if len(tenants) > 0 {
 		tenantStatuses := make(map[string]interface{})
@@ -171,16 +145,15 @@ func (s *Server) health(w http.ResponseWriter, r *http.Request) {
 			if t, ok := s.tm.Get(id); ok {
 				ts := t.Status()
 				tenantStatus := map[string]interface{}{
-					"name":              ts.Name,
-					"pms_connected":     ts.PMSConnected,
-					"pbx_connected":     ts.PBXConnected,
-					"cloud_connected":   ts.PBXConnected, // PBX is the cloud connection
-					"queue_depth":        0,              // Would need event queue tracking
-					"reconnect_count":   ts.ReconnectCount,
+					"name":            ts.Name,
+					"pms_connected":   ts.PMSConnected,
+					"pbx_connected":   ts.PBXConnected,
+					"cloud_connected": ts.PBXConnected,
+					"queue_depth":     0,
+					"reconnect_count": ts.ReconnectCount,
 				}
 				tenantStatuses[id] = tenantStatus
 
-				// Mark degraded if any connection is down
 				if !ts.PMSConnected || !ts.PBXConnected {
 					overallHealthy = false
 				}
@@ -194,10 +167,10 @@ func (s *Server) health(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 
-	json.NewEncoder(w).Encode(status)
+	return c.JSON(status)
 }
 
-func (s *Server) listTenants(w http.ResponseWriter, r *http.Request) {
+func (s *Server) listTenants(c *fiber.Ctx) error {
 	ids := s.tm.List()
 	tenants := make([]tenant.TenantStatus, 0, len(ids))
 
@@ -207,62 +180,53 @@ func (s *Server) listTenants(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 
-	w.Header().Set("Content-Type", "application/json")
-	json.NewEncoder(w).Encode(tenants)
+	c.Set("Content-Type", "application/json")
+	return c.JSON(tenants)
 }
 
-func (s *Server) getTenant(w http.ResponseWriter, r *http.Request) {
-	id := chi.URLParam(r, "id")
+func (s *Server) getTenant(c *fiber.Ctx) error {
+	id := c.Params("id")
 	t, ok := s.tm.Get(id)
 	if !ok {
-		http.Error(w, "tenant not found", http.StatusNotFound)
-		return
+		return c.Status(fiber.StatusNotFound).SendString("tenant not found")
 	}
 
-	w.Header().Set("Content-Type", "application/json")
-	json.NewEncoder(w).Encode(map[string]interface{}{
+	c.Set("Content-Type", "application/json")
+	return c.JSON(map[string]interface{}{
 		"id":   t.ID,
 		"name": t.Name,
 	})
 }
 
-func (s *Server) getTenantStatus(w http.ResponseWriter, r *http.Request) {
-	id := chi.URLParam(r, "id")
+func (s *Server) getTenantStatus(c *fiber.Ctx) error {
+	id := c.Params("id")
 	t, ok := s.tm.Get(id)
 	if !ok {
-		http.Error(w, "tenant not found", http.StatusNotFound)
-		return
+		return c.Status(fiber.StatusNotFound).SendString("tenant not found")
 	}
 
-	w.Header().Set("Content-Type", "application/json")
-	json.NewEncoder(w).Encode(t.Status())
+	c.Set("Content-Type", "application/json")
+	return c.JSON(t.Status())
 }
 
-// =============================================================================
-// Room Mapping Endpoints
-// =============================================================================
-
-func (s *Server) listRooms(w http.ResponseWriter, r *http.Request) {
-	id := chi.URLParam(r, "id")
+func (s *Server) listRooms(c *fiber.Ctx) error {
+	id := c.Params("id")
 	if _, ok := s.tm.Get(id); !ok {
-		http.Error(w, "tenant not found", http.StatusNotFound)
-		return
+		return c.Status(fiber.StatusNotFound).SendString("tenant not found")
 	}
 
 	if s.db == nil {
-		http.Error(w, "database not configured", http.StatusServiceUnavailable)
-		return
+		return c.Status(fiber.StatusServiceUnavailable).SendString("database not configured")
 	}
 
-	rooms, err := s.db.ListRoomMappings(r.Context(), id)
+	rooms, err := s.db.ListRoomMappings(c.Context(), id)
 	if err != nil {
 		log.Error().Err(err).Str("tenant", id).Msg("Failed to list room mappings")
-		http.Error(w, "internal error", http.StatusInternalServerError)
-		return
+		return c.Status(fiber.StatusInternalServerError).SendString("internal error")
 	}
 
-	w.Header().Set("Content-Type", "application/json")
-	json.NewEncoder(w).Encode(rooms)
+	c.Set("Content-Type", "application/json")
+	return c.JSON(rooms)
 }
 
 type createRoomRequest struct {
@@ -270,265 +234,221 @@ type createRoomRequest struct {
 	Extension  string `json:"extension"`
 }
 
-func (s *Server) createRoomMapping(w http.ResponseWriter, r *http.Request) {
-	id := chi.URLParam(r, "id")
+func (s *Server) createRoomMapping(c *fiber.Ctx) error {
+	id := c.Params("id")
 	if _, ok := s.tm.Get(id); !ok {
-		http.Error(w, "tenant not found", http.StatusNotFound)
-		return
+		return c.Status(fiber.StatusNotFound).SendString("tenant not found")
 	}
 
 	if s.db == nil {
-		http.Error(w, "database not configured", http.StatusServiceUnavailable)
-		return
+		return c.Status(fiber.StatusServiceUnavailable).SendString("database not configured")
 	}
 
 	var req createRoomRequest
-	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
-		http.Error(w, "invalid request body", http.StatusBadRequest)
-		return
+	if err := c.BodyParser(&req); err != nil {
+		return c.Status(fiber.StatusBadRequest).SendString("invalid request body")
 	}
 
 	if req.RoomNumber == "" || req.Extension == "" {
-		http.Error(w, "room_number and extension required", http.StatusBadRequest)
-		return
+		return c.Status(fiber.StatusBadRequest).SendString("room_number and extension required")
 	}
 
-	if err := s.db.UpsertRoomMapping(r.Context(), id, req.RoomNumber, req.Extension); err != nil {
+	if err := s.db.UpsertRoomMapping(c.Context(), id, req.RoomNumber, req.Extension); err != nil {
 		log.Error().Err(err).Str("tenant", id).Msg("Failed to create room mapping")
-		http.Error(w, "internal error", http.StatusInternalServerError)
-		return
+		return c.Status(fiber.StatusInternalServerError).SendString("internal error")
 	}
 
-	w.WriteHeader(http.StatusCreated)
-	w.Header().Set("Content-Type", "application/json")
-	json.NewEncoder(w).Encode(map[string]string{
+	c.Set("Content-Type", "application/json")
+	return c.Status(fiber.StatusCreated).JSON(map[string]string{
 		"status":      "created",
 		"room_number": req.RoomNumber,
 		"extension":   req.Extension,
 	})
 }
 
-// =============================================================================
-// Guest Session Endpoints
-// =============================================================================
-
-func (s *Server) listActiveSessions(w http.ResponseWriter, r *http.Request) {
-	id := chi.URLParam(r, "id")
+func (s *Server) listActiveSessions(c *fiber.Ctx) error {
+	id := c.Params("id")
 	if _, ok := s.tm.Get(id); !ok {
-		http.Error(w, "tenant not found", http.StatusNotFound)
-		return
+		return c.Status(fiber.StatusNotFound).SendString("tenant not found")
 	}
 
 	if s.db == nil {
-		http.Error(w, "database not configured", http.StatusServiceUnavailable)
-		return
+		return c.Status(fiber.StatusServiceUnavailable).SendString("database not configured")
 	}
 
-	sessions, err := s.db.ListActiveSessions(r.Context(), id)
+	sessions, err := s.db.ListActiveSessions(c.Context(), id)
 	if err != nil {
 		log.Error().Err(err).Str("tenant", id).Msg("Failed to list active sessions")
-		http.Error(w, "internal error", http.StatusInternalServerError)
-		return
+		return c.Status(fiber.StatusInternalServerError).SendString("internal error")
 	}
 
-	w.Header().Set("Content-Type", "application/json")
-	json.NewEncoder(w).Encode(sessions)
+	c.Set("Content-Type", "application/json")
+	return c.JSON(sessions)
 }
 
-func (s *Server) getSession(w http.ResponseWriter, r *http.Request) {
-	id := chi.URLParam(r, "id")
-	room := chi.URLParam(r, "room")
+func (s *Server) getSession(c *fiber.Ctx) error {
+	id := c.Params("id")
+	room := c.Params("room")
 
 	if _, ok := s.tm.Get(id); !ok {
-		http.Error(w, "tenant not found", http.StatusNotFound)
-		return
+		return c.Status(fiber.StatusNotFound).SendString("tenant not found")
 	}
 
 	if s.db == nil {
-		http.Error(w, "database not configured", http.StatusServiceUnavailable)
-		return
+		return c.Status(fiber.StatusServiceUnavailable).SendString("database not configured")
 	}
 
-	session, err := s.db.GetActiveSession(r.Context(), id, room)
+	session, err := s.db.GetActiveSession(c.Context(), id, room)
 	if err != nil {
 		log.Error().Err(err).Str("tenant", id).Str("room", room).Msg("Failed to get session")
-		http.Error(w, "internal error", http.StatusInternalServerError)
-		return
+		return c.Status(fiber.StatusInternalServerError).SendString("internal error")
 	}
 
 	if session == nil {
-		http.Error(w, "no active session", http.StatusNotFound)
-		return
+		return c.Status(fiber.StatusNotFound).SendString("no active session")
 	}
 
-	w.Header().Set("Content-Type", "application/json")
-	json.NewEncoder(w).Encode(session)
+	c.Set("Content-Type", "application/json")
+	return c.JSON(session)
 }
 
 type createSessionRequest struct {
-	RoomNumber    string                 `json:"room_number"`
-	Extension    string                 `json:"extension"`
-	GuestName    string                 `json:"guest_name"`
-	ReservationID string                `json:"reservation_id"`
-	Metadata     map[string]interface{} `json:"metadata"`
+	RoomNumber     string                 `json:"room_number"`
+	Extension      string                 `json:"extension"`
+	GuestName      string                 `json:"guest_name"`
+	ReservationID  string                 `json:"reservation_id"`
+	Metadata       map[string]interface{} `json:"metadata"`
 }
 
-func (s *Server) createSession(w http.ResponseWriter, r *http.Request) {
-	id := chi.URLParam(r, "id")
+func (s *Server) createSession(c *fiber.Ctx) error {
+	id := c.Params("id")
 	if _, ok := s.tm.Get(id); !ok {
-		http.Error(w, "tenant not found", http.StatusNotFound)
-		return
+		return c.Status(fiber.StatusNotFound).SendString("tenant not found")
 	}
 
 	if s.db == nil {
-		http.Error(w, "database not configured", http.StatusServiceUnavailable)
-		return
+		return c.Status(fiber.StatusServiceUnavailable).SendString("database not configured")
 	}
 
 	var req createSessionRequest
-	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
-		http.Error(w, "invalid request body", http.StatusBadRequest)
-		return
+	if err := c.BodyParser(&req); err != nil {
+		return c.Status(fiber.StatusBadRequest).SendString("invalid request body")
 	}
 
 	if req.RoomNumber == "" || req.GuestName == "" {
-		http.Error(w, "room_number and guest_name required", http.StatusBadRequest)
-		return
+		return c.Status(fiber.StatusBadRequest).SendString("room_number and guest_name required")
 	}
 
-	sessionID, err := s.db.CreateGuestSession(r.Context(), id, req.RoomNumber, req.Extension, req.GuestName, req.ReservationID, req.Metadata)
+	sessionID, err := s.db.CreateGuestSession(c.Context(), id, req.RoomNumber, req.Extension, req.GuestName, req.ReservationID, req.Metadata)
 	if err != nil {
 		log.Error().Err(err).Str("tenant", id).Msg("Failed to create session")
-		http.Error(w, "internal error", http.StatusInternalServerError)
-		return
+		return c.Status(fiber.StatusInternalServerError).SendString("internal error")
 	}
 
-	w.WriteHeader(http.StatusCreated)
-	w.Header().Set("Content-Type", "application/json")
-	json.NewEncoder(w).Encode(map[string]interface{}{
+	c.Set("Content-Type", "application/json")
+	return c.Status(fiber.StatusCreated).JSON(map[string]interface{}{
 		"id":          sessionID,
 		"room_number": req.RoomNumber,
 		"guest_name":  req.GuestName,
 	})
 }
 
-func (s *Server) endSession(w http.ResponseWriter, r *http.Request) {
-	id := chi.URLParam(r, "id")
-	room := chi.URLParam(r, "room")
+func (s *Server) endSession(c *fiber.Ctx) error {
+	id := c.Params("id")
+	room := c.Params("room")
 
 	if _, ok := s.tm.Get(id); !ok {
-		http.Error(w, "tenant not found", http.StatusNotFound)
-		return
+		return c.Status(fiber.StatusNotFound).SendString("tenant not found")
 	}
 
 	if s.db == nil {
-		http.Error(w, "database not configured", http.StatusServiceUnavailable)
-		return
+		return c.Status(fiber.StatusServiceUnavailable).SendString("database not configured")
 	}
 
-	if err := s.db.EndGuestSession(r.Context(), id, room); err != nil {
+	if err := s.db.EndGuestSession(c.Context(), id, room); err != nil {
 		log.Error().Err(err).Str("tenant", id).Str("room", room).Msg("Failed to end session")
-		http.Error(w, "internal error", http.StatusInternalServerError)
-		return
+		return c.Status(fiber.StatusInternalServerError).SendString("internal error")
 	}
 
-	w.Header().Set("Content-Type", "application/json")
-	json.NewEncoder(w).Encode(map[string]string{
+	c.Set("Content-Type", "application/json")
+	return c.JSON(map[string]string{
 		"status": "ended",
 		"room":   room,
 	})
 }
 
-// =============================================================================
-// PMS Event Endpoints
-// =============================================================================
-
-func (s *Server) listEvents(w http.ResponseWriter, r *http.Request) {
-	id := chi.URLParam(r, "id")
+func (s *Server) listEvents(c *fiber.Ctx) error {
+	id := c.Params("id")
 	if _, ok := s.tm.Get(id); !ok {
-		http.Error(w, "tenant not found", http.StatusNotFound)
-		return
+		return c.Status(fiber.StatusNotFound).SendString("tenant not found")
 	}
 
 	if s.db == nil {
-		http.Error(w, "database not configured", http.StatusServiceUnavailable)
-		return
+		return c.Status(fiber.StatusServiceUnavailable).SendString("database not configured")
 	}
 
-	// Parse limit from query params (default 50)
 	limit := 50
-	if l := r.URL.Query().Get("limit"); l != "" {
+	if l := c.Query("limit"); l != "" {
 		if parsed, err := strconv.Atoi(l); err == nil && parsed > 0 && parsed <= 500 {
 			limit = parsed
 		}
 	}
 
-	events, err := s.db.GetRecentEvents(r.Context(), id, limit)
+	events, err := s.db.GetRecentEvents(c.Context(), id, limit)
 	if err != nil {
 		log.Error().Err(err).Str("tenant", id).Msg("Failed to list events")
-		http.Error(w, "internal error", http.StatusInternalServerError)
-		return
+		return c.Status(fiber.StatusInternalServerError).SendString("internal error")
 	}
 
-	w.Header().Set("Content-Type", "application/json")
-	json.NewEncoder(w).Encode(events)
+	c.Set("Content-Type", "application/json")
+	return c.JSON(events)
 }
 
-// =============================================================================
-// PBX Webhook Endpoints
-// =============================================================================
-
-// handlePBXWebhook processes incoming webhooks from PBX systems
-func (s *Server) handlePBXWebhook(w http.ResponseWriter, r *http.Request) {
-	tenantID := chi.URLParam(r, "tenant")
+func (s *Server) handlePBXWebhook(c *fiber.Ctx) error {
+	tenantID := c.Params("tenant")
 
 	t, ok := s.tm.Get(tenantID)
 	if !ok {
 		log.Warn().Str("tenant", tenantID).Msg("PBX webhook for unknown tenant")
-		http.Error(w, "tenant not found", http.StatusNotFound)
-		return
+		return c.Status(fiber.StatusNotFound).SendString("tenant not found")
 	}
 
-	// Get the PBX provider and check if it supports webhooks
 	provider := t.PBXProvider()
 	if provider == nil {
 		log.Error().Str("tenant", tenantID).Msg("Tenant has no PBX provider")
-		http.Error(w, "PBX not configured", http.StatusServiceUnavailable)
-		return
+		return c.Status(fiber.StatusServiceUnavailable).SendString("PBX not configured")
 	}
 
 	webhookProvider, ok := provider.(pbx.WebhookProvider)
 	if !ok {
 		log.Warn().Str("tenant", tenantID).Msg("PBX webhook received but provider doesn't support webhooks")
-		http.Error(w, "webhook not supported for this PBX type", http.StatusBadRequest)
-		return
+		return c.Status(fiber.StatusBadRequest).SendString("webhook not supported for this PBX type")
 	}
 
-	// Handle the webhook
-	if err := webhookProvider.HandleWebhook(r); err != nil {
+	if err := webhookProvider.HandleWebhook(c.Request()); err != nil {
 		log.Error().Err(err).Str("tenant", tenantID).Msg("Failed to process PBX webhook")
-		http.Error(w, "webhook processing failed", http.StatusBadRequest)
-		return
+		return c.Status(fiber.StatusBadRequest).SendString("webhook processing failed")
 	}
 
-	w.WriteHeader(http.StatusOK)
-	w.Write([]byte(`{"status":"ok"}`))
+	c.Status(fiber.StatusOK)
+	return c.SendString(`{"status":"ok"}`)
 }
 
-// =============================================================================
-// TigerTMS HTTP Endpoint Handlers
-// =============================================================================
+func (s *Server) handleTigerTMS(c *fiber.Ctx) error {
+	tenantID := c.Params("tenant")
 
-// handleTigerTMS routes TigerTMS API requests to the appropriate tenant handler
-func (s *Server) handleTigerTMS(w http.ResponseWriter, r *http.Request) {
-	tenantID := chi.URLParam(r, "tenant")
-
-	handler, ok := s.tigertmsHandlers[tenantID]
-	if !ok {
+	var targetApp *fiber.App
+	for app, tid := range s.tigertmsHandlers {
+		if tid == tenantID {
+			targetApp = app
+			break
+		}
+	}
+	if targetApp == nil {
 		log.Warn().Str("tenant", tenantID).Msg("TigerTMS request for unknown tenant")
-		http.Error(w, "tenant not found", http.StatusNotFound)
-		return
+		return c.Status(fiber.StatusNotFound).SendString("tenant not found")
 	}
 
-	handler.ServeHTTP(w, r)
+	targetApp.Handler()(c.FiberContext())
+	return nil
 }

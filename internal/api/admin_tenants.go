@@ -3,10 +3,9 @@ package api
 import (
 	"encoding/json"
 	"io"
-	"net/http"
 	"regexp"
 
-	"github.com/go-chi/chi/v5"
+	"github.com/gofiber/fiber/v2"
 	"github.com/rs/zerolog/log"
 
 	"github.com/sagostin/pbx-hospitality/internal/config"
@@ -14,39 +13,27 @@ import (
 	"github.com/sagostin/pbx-hospitality/internal/tenant"
 )
 
-// AdminServer wraps the API Server for admin endpoints
 type AdminServer struct {
 	*Server
 }
 
-// adminKeyMiddleware validates the X-Admin-Key header
-func adminKeyMiddleware(adminKey string) func(http.Handler) http.Handler {
-	return func(next http.Handler) http.Handler {
-		return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-			if adminKey == "" {
-				// Admin API disabled if no key configured
-				writeError(w, "admin API not configured", "ADMIN_NOT_CONFIGURED", http.StatusServiceUnavailable)
-				return
-			}
-			key := r.Header.Get("X-Admin-Key")
-			if key == "" || key != adminKey {
-				writeError(w, "invalid or missing X-Admin-Key header", "UNAUTHORIZED", http.StatusUnauthorized)
-				return
-			}
-			next.ServeHTTP(w, r)
-		})
+func adminKeyMiddleware(adminKey string) fiber.Handler {
+	return func(c *fiber.Ctx) error {
+		if adminKey == "" {
+			return writeError(c, "admin API not configured", "ADMIN_NOT_CONFIGURED", fiber.StatusServiceUnavailable)
+		}
+		key := c.Get("X-Admin-Key")
+		if key == "" || key != adminKey {
+			return writeError(c, "invalid or missing X-Admin-Key header", "UNAUTHORIZED", fiber.StatusUnauthorized)
+		}
+		return c.Next()
 	}
 }
 
-func writeError(w http.ResponseWriter, message, code string, status int) {
-	w.Header().Set("Content-Type", "application/json")
-	w.WriteHeader(status)
-	json.NewEncoder(w).Encode(map[string]string{"error": message, "code": code})
+func writeError(c *fiber.Ctx, message, code string, status int) error {
+	c.Set("Content-Type", "application/json")
+	return c.Status(status).JSON(map[string]string{"error": message, "code": code})
 }
-
-// =============================================================================
-// Tenant CRUD Handlers
-// =============================================================================
 
 type tenantResponse struct {
 	ID        string                 `json:"id"`
@@ -55,8 +42,8 @@ type tenantResponse struct {
 	PBXConfig map[string]interface{} `json:"pbx_config"`
 	Settings  map[string]interface{} `json:"settings"`
 	Enabled   bool                   `json:"enabled"`
-	CreatedAt string                `json:"created_at,omitempty"`
-	UpdatedAt string                `json:"updated_at,omitempty"`
+	CreatedAt string                 `json:"created_at,omitempty"`
+	UpdatedAt string                 `json:"updated_at,omitempty"`
 }
 
 type createTenantRequest struct {
@@ -76,7 +63,6 @@ type updateTenantRequest struct {
 	Enabled   *bool                  `json:"enabled,omitempty"`
 }
 
-// validateTenantID validates tenant ID format: alphanumeric with dashes, max 64 chars
 var tenantIDRegex = regexp.MustCompile(`^[a-zA-Z0-9][a-zA-Z0-9-]*[a-zA-Z0-9]$|^[a-zA-Z0-9]$`)
 
 func validateTenantID(id string) bool {
@@ -86,17 +72,15 @@ func validateTenantID(id string) bool {
 	return tenantIDRegex.MatchString(id)
 }
 
-func (s *AdminServer) listTenants(w http.ResponseWriter, r *http.Request) {
+func (s *AdminServer) listTenants(c *fiber.Ctx) error {
 	if s.db == nil {
-		writeError(w, "database not configured", "DB_NOT_CONFIGURED", http.StatusServiceUnavailable)
-		return
+		return writeError(c, "database not configured", "DB_NOT_CONFIGURED", fiber.StatusServiceUnavailable)
 	}
 
-	tenants, err := s.db.ListTenants(r.Context())
+	tenants, err := s.db.ListTenants(c.Context())
 	if err != nil {
 		log.Error().Err(err).Msg("Failed to list tenants")
-		writeError(w, "failed to list tenants", "INTERNAL_ERROR", http.StatusInternalServerError)
-		return
+		return writeError(c, "failed to list tenants", "INTERNAL_ERROR", fiber.StatusInternalServerError)
 	}
 
 	result := make([]tenantResponse, 0, len(tenants))
@@ -104,85 +88,69 @@ func (s *AdminServer) listTenants(w http.ResponseWriter, r *http.Request) {
 		result = append(result, toTenantResponse(t))
 	}
 
-	w.Header().Set("Content-Type", "application/json")
-	json.NewEncoder(w).Encode(result)
+	c.Set("Content-Type", "application/json")
+	return c.JSON(result)
 }
 
-func (s *AdminServer) getTenant(w http.ResponseWriter, r *http.Request) {
+func (s *AdminServer) getTenant(c *fiber.Ctx) error {
 	if s.db == nil {
-		writeError(w, "database not configured", "DB_NOT_CONFIGURED", http.StatusServiceUnavailable)
-		return
+		return writeError(c, "database not configured", "DB_NOT_CONFIGURED", fiber.StatusServiceUnavailable)
 	}
 
-	id := chi.URLParam(r, "id")
+	id := c.Params("id")
 	if !validateTenantID(id) {
-		writeError(w, "invalid tenant ID format", "INVALID_ID", http.StatusBadRequest)
-		return
+		return writeError(c, "invalid tenant ID format", "INVALID_ID", fiber.StatusBadRequest)
 	}
 
-	t, err := s.db.GetTenant(r.Context(), id)
+	t, err := s.db.GetTenant(c.Context(), id)
 	if err != nil {
 		log.Error().Err(err).Str("tenant", id).Msg("Failed to get tenant")
-		writeError(w, "failed to get tenant", "INTERNAL_ERROR", http.StatusInternalServerError)
-		return
+		return writeError(c, "failed to get tenant", "INTERNAL_ERROR", fiber.StatusInternalServerError)
 	}
 	if t == nil {
-		writeError(w, "tenant not found", "NOT_FOUND", http.StatusNotFound)
-		return
+		return writeError(c, "tenant not found", "NOT_FOUND", fiber.StatusNotFound)
 	}
 
-	w.Header().Set("Content-Type", "application/json")
-	json.NewEncoder(w).Encode(toTenantResponse(*t))
+	c.Set("Content-Type", "application/json")
+	return c.JSON(toTenantResponse(*t))
 }
 
-func (s *AdminServer) createTenant(w http.ResponseWriter, r *http.Request) {
+func (s *AdminServer) createTenant(c *fiber.Ctx) error {
 	if s.db == nil {
-		writeError(w, "database not configured", "DB_NOT_CONFIGURED", http.StatusServiceUnavailable)
-		return
+		return writeError(c, "database not configured", "DB_NOT_CONFIGURED", fiber.StatusServiceUnavailable)
 	}
 
 	var req createTenantRequest
-	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
-		writeError(w, "invalid request body", "INVALID_BODY", http.StatusBadRequest)
-		return
+	if err := c.BodyParser(&req); err != nil {
+		return writeError(c, "invalid request body", "INVALID_BODY", fiber.StatusBadRequest)
 	}
 
-	// Validate required fields
 	if req.ID == "" {
-		writeError(w, "id is required", "VALIDATION_ERROR", http.StatusBadRequest)
-		return
+		return writeError(c, "id is required", "VALIDATION_ERROR", fiber.StatusBadRequest)
 	}
 	if !validateTenantID(req.ID) {
-		writeError(w, "id must be alphanumeric with dashes, max 64 chars", "VALIDATION_ERROR", http.StatusBadRequest)
-		return
+		return writeError(c, "id must be alphanumeric with dashes, max 64 chars", "VALIDATION_ERROR", fiber.StatusBadRequest)
 	}
 	if req.Name == "" {
-		writeError(w, "name is required", "VALIDATION_ERROR", http.StatusBadRequest)
-		return
+		return writeError(c, "name is required", "VALIDATION_ERROR", fiber.StatusBadRequest)
 	}
 	if len(req.Name) > 255 {
-		writeError(w, "name must be max 255 chars", "VALIDATION_ERROR", http.StatusBadRequest)
-		return
+		return writeError(c, "name must be max 255 chars", "VALIDATION_ERROR", fiber.StatusBadRequest)
 	}
 	if err := validatePMSConfig(req.PMSConfig); err != nil {
-		writeError(w, err.Error(), "VALIDATION_ERROR", http.StatusBadRequest)
-		return
+		return writeError(c, err.Error(), "VALIDATION_ERROR", fiber.StatusBadRequest)
 	}
 	if err := validatePBXConfig(req.PBXConfig); err != nil {
-		writeError(w, err.Error(), "VALIDATION_ERROR", http.StatusBadRequest)
-		return
+		return writeError(c, err.Error(), "VALIDATION_ERROR", fiber.StatusBadRequest)
 	}
 
-	// Check if already exists
-	existing, err := s.db.GetTenant(r.Context(), req.ID)
+	existing, err := s.db.GetTenant(c.Context(), req.ID)
 	if err != nil {
 		log.Error().Err(err).Str("tenant", req.ID).Msg("Failed to check existing tenant")
-		writeError(w, "failed to create tenant", "INTERNAL_ERROR", http.StatusInternalServerError)
-		return
+		return writeError(c, "failed to create tenant", "INTERNAL_ERROR", fiber.StatusInternalServerError)
 	}
 	if existing != nil {
-		writeError(w, "tenant already exists", "ALREADY_EXISTS", http.StatusConflict)
-		return
+		return writeError(c, "tenant already exists", "ALREADY_EXISTS", fiber.StatusConflict)
 	}
 
 	t := &db.Tenant{
@@ -193,77 +161,62 @@ func (s *AdminServer) createTenant(w http.ResponseWriter, r *http.Request) {
 		Settings:  req.Settings,
 		Enabled:   req.Enabled,
 	}
-	if err := s.db.CreateTenant(r.Context(), t); err != nil {
+	if err := s.db.CreateTenant(c.Context(), t); err != nil {
 		log.Error().Err(err).Str("tenant", req.ID).Msg("Failed to create tenant")
-		writeError(w, "failed to create tenant", "INTERNAL_ERROR", http.StatusInternalServerError)
-		return
+		return writeError(c, "failed to create tenant", "INTERNAL_ERROR", fiber.StatusInternalServerError)
 	}
 
-	// Reload tenant manager cache to pick up the new tenant
 	if err := s.tm.ReloadFromDB(); err != nil {
 		log.Warn().Err(err).Str("tenant", req.ID).Msg("Failed to reload tenant manager after create")
 	}
 
-	w.WriteHeader(http.StatusCreated)
-	w.Header().Set("Content-Type", "application/json")
-	created, _ := s.db.GetTenant(r.Context(), req.ID)
-	if created != nil {
-		json.NewEncoder(w).Encode(toTenantResponse(*created))
-	}
+	created, _ := s.db.GetTenant(c.Context(), req.ID)
+	c.Set("Content-Type", "application/json")
+	return c.Status(fiber.StatusCreated).JSON(toTenantResponse(*created))
 }
 
-func (s *AdminServer) updateTenant(w http.ResponseWriter, r *http.Request) {
+func (s *AdminServer) updateTenant(c *fiber.Ctx) error {
 	if s.db == nil {
-		writeError(w, "database not configured", "DB_NOT_CONFIGURED", http.StatusServiceUnavailable)
-		return
+		return writeError(c, "database not configured", "DB_NOT_CONFIGURED", fiber.StatusServiceUnavailable)
 	}
 
-	id := chi.URLParam(r, "id")
+	id := c.Params("id")
 	if !validateTenantID(id) {
-		writeError(w, "invalid tenant ID format", "INVALID_ID", http.StatusBadRequest)
-		return
+		return writeError(c, "invalid tenant ID format", "INVALID_ID", fiber.StatusBadRequest)
 	}
 
-	existing, err := s.db.GetTenant(r.Context(), id)
+	existing, err := s.db.GetTenant(c.Context(), id)
 	if err != nil {
 		log.Error().Err(err).Str("tenant", id).Msg("Failed to get tenant for update")
-		writeError(w, "failed to update tenant", "INTERNAL_ERROR", http.StatusInternalServerError)
-		return
+		return writeError(c, "failed to update tenant", "INTERNAL_ERROR", fiber.StatusInternalServerError)
 	}
 	if existing == nil {
-		writeError(w, "tenant not found", "NOT_FOUND", http.StatusNotFound)
-		return
+		return writeError(c, "tenant not found", "NOT_FOUND", fiber.StatusNotFound)
 	}
 
 	var req updateTenantRequest
-	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
-		writeError(w, "invalid request body", "INVALID_BODY", http.StatusBadRequest)
-		return
+	if err := c.BodyParser(&req); err != nil {
+		return writeError(c, "invalid request body", "INVALID_BODY", fiber.StatusBadRequest)
 	}
 
-	// Apply partial updates
 	if req.Name != nil {
 		if *req.Name == "" {
-			writeError(w, "name cannot be empty", "VALIDATION_ERROR", http.StatusBadRequest)
-			return
+			return writeError(c, "name cannot be empty", "VALIDATION_ERROR", fiber.StatusBadRequest)
 		}
 		if len(*req.Name) > 255 {
-			writeError(w, "name must be max 255 chars", "VALIDATION_ERROR", http.StatusBadRequest)
-			return
+			return writeError(c, "name must be max 255 chars", "VALIDATION_ERROR", fiber.StatusBadRequest)
 		}
 		existing.Name = *req.Name
 	}
 	if req.PMSConfig != nil {
 		if err := validatePMSConfig(req.PMSConfig); err != nil {
-			writeError(w, err.Error(), "VALIDATION_ERROR", http.StatusBadRequest)
-			return
+			return writeError(c, err.Error(), "VALIDATION_ERROR", fiber.StatusBadRequest)
 		}
 		existing.PMSConfig = req.PMSConfig
 	}
 	if req.PBXConfig != nil {
 		if err := validatePBXConfig(req.PBXConfig); err != nil {
-			writeError(w, err.Error(), "VALIDATION_ERROR", http.StatusBadRequest)
-			return
+			return writeError(c, err.Error(), "VALIDATION_ERROR", fiber.StatusBadRequest)
 		}
 		existing.PBXConfig = req.PBXConfig
 	}
@@ -274,95 +227,76 @@ func (s *AdminServer) updateTenant(w http.ResponseWriter, r *http.Request) {
 		existing.Enabled = *req.Enabled
 	}
 
-	if err := s.db.UpdateTenant(r.Context(), existing); err != nil {
+	if err := s.db.UpdateTenant(c.Context(), existing); err != nil {
 		log.Error().Err(err).Str("tenant", id).Msg("Failed to update tenant")
-		writeError(w, "failed to update tenant", "INTERNAL_ERROR", http.StatusInternalServerError)
-		return
+		return writeError(c, "failed to update tenant", "INTERNAL_ERROR", fiber.StatusInternalServerError)
 	}
 
-	// Reload tenant manager to apply changes
 	if err := s.tm.ReloadFromDB(); err != nil {
 		log.Warn().Err(err).Str("tenant", id).Msg("Failed to reload tenant manager after update")
 	}
 
-	w.Header().Set("Content-Type", "application/json")
-	json.NewEncoder(w).Encode(toTenantResponse(*existing))
+	c.Set("Content-Type", "application/json")
+	return c.JSON(toTenantResponse(*existing))
 }
 
-func (s *AdminServer) deleteTenant(w http.ResponseWriter, r *http.Request) {
+func (s *AdminServer) deleteTenant(c *fiber.Ctx) error {
 	if s.db == nil {
-		writeError(w, "database not configured", "DB_NOT_CONFIGURED", http.StatusServiceUnavailable)
-		return
+		return writeError(c, "database not configured", "DB_NOT_CONFIGURED", fiber.StatusServiceUnavailable)
 	}
 
-	id := chi.URLParam(r, "id")
+	id := c.Params("id")
 	if !validateTenantID(id) {
-		writeError(w, "invalid tenant ID format", "INVALID_ID", http.StatusBadRequest)
-		return
+		return writeError(c, "invalid tenant ID format", "INVALID_ID", fiber.StatusBadRequest)
 	}
 
-	existing, err := s.db.GetTenant(r.Context(), id)
+	existing, err := s.db.GetTenant(c.Context(), id)
 	if err != nil {
 		log.Error().Err(err).Str("tenant", id).Msg("Failed to get tenant for delete")
-		writeError(w, "failed to delete tenant", "INTERNAL_ERROR", http.StatusInternalServerError)
-		return
+		return writeError(c, "failed to delete tenant", "INTERNAL_ERROR", fiber.StatusInternalServerError)
 	}
 	if existing == nil {
-		writeError(w, "tenant not found", "NOT_FOUND", http.StatusNotFound)
-		return
+		return writeError(c, "tenant not found", "NOT_FOUND", fiber.StatusNotFound)
 	}
 
-	if err := s.db.DeleteTenant(r.Context(), id); err != nil {
+	if err := s.db.DeleteTenant(c.Context(), id); err != nil {
 		log.Error().Err(err).Str("tenant", id).Msg("Failed to delete tenant")
-		writeError(w, "failed to delete tenant", "INTERNAL_ERROR", http.StatusInternalServerError)
-		return
+		return writeError(c, "failed to delete tenant", "INTERNAL_ERROR", fiber.StatusInternalServerError)
 	}
 
-	// Invalidate cache so tenant manager drops in-memory state
 	s.tm.InvalidateCache(id)
 
-	w.WriteHeader(http.StatusNoContent)
+	return c.SendStatus(fiber.StatusNoContent)
 }
-
-// =============================================================================
-// Import Handler
-// =============================================================================
 
 type importRequest struct {
 	Tenants []createTenantRequest `json:"tenants"`
 }
 
-func (s *AdminServer) importTenants(w http.ResponseWriter, r *http.Request) {
+func (s *AdminServer) importTenants(c *fiber.Ctx) error {
 	if s.db == nil {
-		writeError(w, "database not configured", "DB_NOT_CONFIGURED", http.StatusServiceUnavailable)
-		return
+		return writeError(c, "database not configured", "DB_NOT_CONFIGURED", fiber.StatusServiceUnavailable)
 	}
 
-	body, err := io.ReadAll(r.Body)
+	body, err := io.ReadAll(c.Request().Body)
 	if err != nil {
-		writeError(w, "failed to read request body", "INVALID_BODY", http.StatusBadRequest)
-		return
+		return writeError(c, "failed to read request body", "INVALID_BODY", fiber.StatusBadRequest)
 	}
 
-	// Try YAML first
 	var yamlReq struct {
 		Tenants []createTenantRequest `json:"tenants" yaml:"tenants"`
 	}
 	if err := json.Unmarshal(body, &yamlReq); err != nil {
-		// Not JSON, try YAML
-		writeError(w, "request must be JSON or YAML with a 'tenants' array", "INVALID_FORMAT", http.StatusBadRequest)
-		return
+		return writeError(c, "request must be JSON or YAML with a 'tenants' array", "INVALID_FORMAT", fiber.StatusBadRequest)
 	}
 
 	if len(yamlReq.Tenants) == 0 {
-		writeError(w, "no tenants provided", "VALIDATION_ERROR", http.StatusBadRequest)
-		return
+		return writeError(c, "no tenants provided", "VALIDATION_ERROR", fiber.StatusBadRequest)
 	}
 
 	created := 0
 	errors := []string{}
 	for _, req := range yamlReq.Tenants {
-		// Validate
 		if req.ID == "" || !validateTenantID(req.ID) {
 			errors = append(errors, "tenant with empty/invalid ID: "+req.ID)
 			continue
@@ -380,8 +314,7 @@ func (s *AdminServer) importTenants(w http.ResponseWriter, r *http.Request) {
 			continue
 		}
 
-		// Check if exists
-		existing, _ := s.db.GetTenant(r.Context(), req.ID)
+		existing, _ := s.db.GetTenant(c.Context(), req.ID)
 		if existing != nil {
 			errors = append(errors, "tenant '"+req.ID+"': already exists")
 			continue
@@ -395,28 +328,23 @@ func (s *AdminServer) importTenants(w http.ResponseWriter, r *http.Request) {
 			Settings:  req.Settings,
 			Enabled:   req.Enabled,
 		}
-		if err := s.db.CreateTenant(r.Context(), t); err != nil {
+		if err := s.db.CreateTenant(c.Context(), t); err != nil {
 			errors = append(errors, "tenant '"+req.ID+"': failed to create: "+err.Error())
 			continue
 		}
 		created++
 	}
 
-	// Reload manager
 	if err := s.tm.ReloadFromDB(); err != nil {
 		log.Warn().Err(err).Msg("Failed to reload tenant manager after import")
 	}
 
-	w.Header().Set("Content-Type", "application/json")
-	json.NewEncoder(w).Encode(map[string]interface{}{
+	c.Set("Content-Type", "application/json")
+	return c.JSON(map[string]interface{}{
 		"created": created,
 		"errors":  errors,
 	})
 }
-
-// =============================================================================
-// Validation Helpers
-// =============================================================================
 
 func validatePMSConfig(cfg map[string]interface{}) error {
 	if cfg == nil {
@@ -424,7 +352,7 @@ func validatePMSConfig(cfg map[string]interface{}) error {
 	}
 	protocol, ok := cfg["protocol"].(string)
 	if !ok || protocol == "" {
-		return nil // PMS config is optional
+		return nil
 	}
 	validProtocols := map[string]bool{"mitel": true, "fias": true, "tigertms": true}
 	if !validProtocols[protocol] {
@@ -439,7 +367,7 @@ func validatePBXConfig(cfg map[string]interface{}) error {
 	}
 	pbxType, ok := cfg["type"].(string)
 	if !ok || pbxType == "" {
-		return nil // PBX config is optional
+		return nil
 	}
 	validTypes := map[string]bool{"bicom": true, "zultys": true, "freeswitch": true}
 	if !validTypes[pbxType] {
