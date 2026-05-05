@@ -5,12 +5,12 @@ import (
 	"fmt"
 	"time"
 
-	"github.com/jackc/pgx/v5"
-	"github.com/jackc/pgx/v5/pgxpool"
 	"github.com/rs/zerolog/log"
+	"gorm.io/driver/postgres"
+	"gorm.io/gorm"
+	"gorm.io/gorm/logger"
 )
 
-// Config holds database connection settings
 type Config struct {
 	Host     string
 	Port     int
@@ -20,7 +20,6 @@ type Config struct {
 	SSLMode  string
 }
 
-// DSN returns the PostgreSQL connection string
 func (c *Config) DSN() string {
 	return fmt.Sprintf(
 		"host=%s port=%d user=%s password=%s dbname=%s sslmode=%s",
@@ -28,489 +27,342 @@ func (c *Config) DSN() string {
 	)
 }
 
-// DB wraps pgxpool for database operations
 type DB struct {
-	pool *pgxpool.Pool
+	*gorm.DB
 }
 
-// New creates a new database connection pool
 func New(ctx context.Context, cfg Config) (*DB, error) {
-	poolCfg, err := pgxpool.ParseConfig(cfg.DSN())
-	if err != nil {
-		return nil, fmt.Errorf("parsing db config: %w", err)
+	gormConfig := &gorm.Config{
+		Logger: logger.Default.LogMode(logger.Silent),
 	}
 
-	// Set pool configuration
-	poolCfg.MaxConns = 10
-	poolCfg.MinConns = 2
-	poolCfg.MaxConnLifetime = 30 * time.Minute
-	poolCfg.HealthCheckPeriod = 1 * time.Minute
-
-	pool, err := pgxpool.NewWithConfig(ctx, poolCfg)
+	db, err := gorm.Open(postgres.Open(cfg.DSN()), gormConfig)
 	if err != nil {
-		return nil, fmt.Errorf("creating pool: %w", err)
+		return nil, fmt.Errorf("connecting to database: %w", err)
 	}
 
-	// Verify connection
-	if err := pool.Ping(ctx); err != nil {
+	sqlDB, err := db.DB()
+	if err != nil {
+		return nil, fmt.Errorf("getting underlying db: %w", err)
+	}
+
+	sqlDB.SetMaxOpenConns(10)
+	sqlDB.SetMaxIdleConns(2)
+	sqlDB.SetConnMaxLifetime(30 * time.Minute)
+
+	if err := sqlDB.Ping(); err != nil {
 		return nil, fmt.Errorf("pinging database: %w", err)
 	}
 
 	log.Info().Str("host", cfg.Host).Str("database", cfg.Database).Msg("Database connected")
 
-	return &DB{pool: pool}, nil
+	return &DB{db}, nil
 }
 
-// Close closes the database connection pool
 func (db *DB) Close() {
-	if db.pool != nil {
-		db.pool.Close()
+	if db.DB != nil {
+		sqlDB, _ := db.DB.DB()
+		if sqlDB != nil {
+			sqlDB.Close()
+		}
 	}
 }
 
-// Pool returns the underlying connection pool
-func (db *DB) Pool() *pgxpool.Pool {
-	return db.pool
+func (db *DB) Pool() *gorm.DB {
+	return db.DB
 }
 
-// =============================================================================
-// Site Repository
-// =============================================================================
-
-// Site represents a physical location/grouping of tenants
 type Site struct {
-	ID        string
-	Name      string
-	AuthCode  string // Hashed auth code for site connector authentication
-	Settings  map[string]interface{}
-	Enabled   bool
+	ID        string `gorm:"primaryKey;size:64"`
+	Name      string `gorm:"size:255;not null"`
+	AuthCode  string `gorm:"column:auth_code;size:128;not null"`
+	Settings  string `gorm:"type:jsonb;default:'{}'"`
+	Enabled   bool   `gorm:"default:true"`
 	CreatedAt time.Time
 	UpdatedAt time.Time
 }
 
-// GetSite retrieves a site by ID
+func (Site) TableName() string {
+	return "sites"
+}
+
+type Tenant struct {
+	ID        string  `gorm:"primaryKey;size:64"`
+	SiteID    *string `gorm:"column:site_id;size:64;index"`
+	Name      string  `gorm:"size:255;not null"`
+	PMSConfig string  `gorm:"column:pms_config;type:jsonb;default:'{}'"`
+	PBXConfig string  `gorm:"column:pbx_config;type:jsonb;default:'{}'"`
+	Settings  string  `gorm:"type:jsonb;default:'{}'"`
+	Enabled   bool    `gorm:"default:true"`
+	CreatedAt time.Time
+	UpdatedAt time.Time
+}
+
+func (Tenant) TableName() string {
+	return "tenants"
+}
+
+type RoomMapping struct {
+	ID         uint   `gorm:"primaryKey;autoIncrement"`
+	TenantID   string `gorm:"column:tenant_id;size:64;not null;index:idx_room_mappings_tenant"`
+	RoomNumber string `gorm:"column:room_number;size:32;not null"`
+	Extension  string `gorm:"size:32;not null"`
+	CreatedAt  time.Time
+	UpdatedAt  time.Time
+}
+
+func (RoomMapping) TableName() string {
+	return "room_mappings"
+}
+
+type GuestSession struct {
+	ID            uint       `gorm:"primaryKey;autoIncrement"`
+	TenantID      string     `gorm:"column:tenant_id;size:64;not null;index:idx_guest_sessions_tenant"`
+	RoomNumber    string     `gorm:"column:room_number;size:32;not null"`
+	Extension     string     `gorm:"size:32"`
+	GuestName     string     `gorm:"size:255"`
+	ReservationID string     `gorm:"column:reservation_id;size:64"`
+	CheckIn       time.Time  `gorm:"not null"`
+	CheckOut      *time.Time `gorm:"index:idx_guest_sessions_active;index:idx_guest_sessions_tenant"`
+	Metadata      string     `gorm:"type:jsonb;default:'{}'"`
+}
+
+func (GuestSession) TableName() string {
+	return "guest_sessions"
+}
+
+type PMSEvent struct {
+	ID         int64     `gorm:"primaryKey;autoIncrement"`
+	TenantID   string    `gorm:"column:tenant_id;size:64;not null;index:idx_pms_events_tenant"`
+	EventType  string    `gorm:"column:event_type;size:32;not null"`
+	RoomNumber string    `gorm:"column:room_number;size:32"`
+	Extension  string    `gorm:"size:32"`
+	RawData    []byte    `gorm:"type:bytea"`
+	Processed  bool      `gorm:"default:false;index:idx_pms_events_unprocessed"`
+	Error      string    `gorm:"type:text"`
+	CreatedAt  time.Time `gorm:"index:idx_pms_events_tenant"`
+}
+
+func (PMSEvent) TableName() string {
+	return "pms_events"
+}
+
+func AutoMigrate(db *DB) error {
+	return db.DB.AutoMigrate(
+		&Site{},
+		&Tenant{},
+		&RoomMapping{},
+		&GuestSession{},
+		&PMSEvent{},
+	)
+}
+
 func (db *DB) GetSite(ctx context.Context, id string) (*Site, error) {
 	var s Site
-	err := db.pool.QueryRow(ctx, `
-		SELECT id, name, auth_code, settings, enabled, created_at, updated_at
-		FROM sites WHERE id = $1
-	`, id).Scan(&s.ID, &s.Name, &s.AuthCode, &s.Settings, &s.Enabled, &s.CreatedAt, &s.UpdatedAt)
-
-	if err == pgx.ErrNoRows {
-		return nil, nil
-	}
-	if err != nil {
+	if err := db.DB.WithContext(ctx).First(&s, "id = ?", id).Error; err != nil {
+		if err == gorm.ErrRecordNotFound {
+			return nil, nil
+		}
 		return nil, fmt.Errorf("querying site: %w", err)
 	}
 	return &s, nil
 }
 
-// ListSites returns all sites
 func (db *DB) ListSites(ctx context.Context) ([]Site, error) {
-	rows, err := db.pool.Query(ctx, `
-		SELECT id, name, auth_code, settings, enabled, created_at, updated_at
-		FROM sites ORDER BY name
-	`)
-	if err != nil {
-		return nil, fmt.Errorf("querying sites: %w", err)
-	}
-	defer rows.Close()
-
 	var sites []Site
-	for rows.Next() {
-		var s Site
-		if err := rows.Scan(&s.ID, &s.Name, &s.AuthCode, &s.Settings, &s.Enabled, &s.CreatedAt, &s.UpdatedAt); err != nil {
-			return nil, fmt.Errorf("scanning site: %w", err)
-		}
-		sites = append(sites, s)
+	if err := db.DB.WithContext(ctx).Order("name").Find(&sites).Error; err != nil {
+		return nil, fmt.Errorf("querying sites: %w", err)
 	}
 	return sites, nil
 }
 
-// CreateSite creates a new site
 func (db *DB) CreateSite(ctx context.Context, s *Site) error {
-	_, err := db.pool.Exec(ctx, `
-		INSERT INTO sites (id, name, auth_code, settings, enabled)
-		VALUES ($1, $2, $3, $4, $5)
-	`, s.ID, s.Name, s.AuthCode, s.Settings, s.Enabled)
-	if err != nil {
+	if err := db.DB.WithContext(ctx).Create(s).Error; err != nil {
 		return fmt.Errorf("creating site: %w", err)
 	}
 	return nil
 }
 
-// UpdateSite updates an existing site
 func (db *DB) UpdateSite(ctx context.Context, s *Site) error {
-	_, err := db.pool.Exec(ctx, `
-		UPDATE sites
-		SET name = $2, auth_code = $3, settings = $4, enabled = $5, updated_at = NOW()
-		WHERE id = $1
-	`, s.ID, s.Name, s.AuthCode, s.Settings, s.Enabled)
-	if err != nil {
+	if err := db.DB.WithContext(ctx).Model(s).Updates(map[string]interface{}{
+		"name":       s.Name,
+		"auth_code":  s.AuthCode,
+		"settings":   s.Settings,
+		"enabled":    s.Enabled,
+		"updated_at": time.Now(),
+	}).Error; err != nil {
 		return fmt.Errorf("updating site: %w", err)
 	}
 	return nil
 }
 
-// DeleteSite deletes a site by ID (tenants become orphaned, site_id set to NULL)
 func (db *DB) DeleteSite(ctx context.Context, id string) error {
-	_, err := db.pool.Exec(ctx, `DELETE FROM sites WHERE id = $1`, id)
-	if err != nil {
+	if err := db.DB.WithContext(ctx).Delete(&Site{}, "id = ?", id).Error; err != nil {
 		return fmt.Errorf("deleting site: %w", err)
 	}
 	return nil
 }
 
-// ValidateSiteAuthCode checks if the provided auth code matches the site's auth code
 func (db *DB) ValidateSiteAuthCode(ctx context.Context, siteID, authCode string) (bool, error) {
-	var storedCode string
-	err := db.pool.QueryRow(ctx, `
-		SELECT auth_code FROM sites WHERE id = $1 AND enabled = TRUE
-	`, siteID).Scan(&storedCode)
-	if err == pgx.ErrNoRows {
-		return false, nil
-	}
-	if err != nil {
+	var s Site
+	if err := db.DB.WithContext(ctx).Select("auth_code").First(&s, "id = ? AND enabled = ?", siteID, true).Error; err != nil {
+		if err == gorm.ErrRecordNotFound {
+			return false, nil
+		}
 		return false, fmt.Errorf("querying site auth: %w", err)
 	}
-	return storedCode == authCode, nil
+	return s.AuthCode == authCode, nil
 }
 
-// ListTenantsBySite returns all tenants belonging to a site
 func (db *DB) ListTenantsBySite(ctx context.Context, siteID string) ([]Tenant, error) {
-	rows, err := db.pool.Query(ctx, `
-		SELECT id, site_id, name, pms_config, pbx_config, settings, enabled, created_at, updated_at
-		FROM tenants WHERE site_id = $1 ORDER BY name
-	`, siteID)
-	if err != nil {
-		return nil, fmt.Errorf("querying tenants by site: %w", err)
-	}
-	defer rows.Close()
-
 	var tenants []Tenant
-	for rows.Next() {
-		var t Tenant
-		if err := rows.Scan(&t.ID, &t.SiteID, &t.Name, &t.PMSConfig, &t.PBXConfig, &t.Settings, &t.Enabled, &t.CreatedAt, &t.UpdatedAt); err != nil {
-			return nil, fmt.Errorf("scanning tenant: %w", err)
-		}
-		tenants = append(tenants, t)
+	if err := db.DB.WithContext(ctx).Where("site_id = ?", siteID).Order("name").Find(&tenants).Error; err != nil {
+		return nil, fmt.Errorf("querying tenants by site: %w", err)
 	}
 	return tenants, nil
 }
 
-// =============================================================================
-// Tenant Repository
-// =============================================================================
-
-// Tenant represents a row in the tenants table
-type Tenant struct {
-	ID        string
-	SiteID    *string // Pointer to allow NULL when no site assigned
-	Name      string
-	PMSConfig map[string]interface{}
-	PBXConfig map[string]interface{}
-	Settings  map[string]interface{}
-	Enabled   bool
-	CreatedAt time.Time
-	UpdatedAt time.Time
-}
-
-// GetTenant retrieves a tenant by ID
 func (db *DB) GetTenant(ctx context.Context, id string) (*Tenant, error) {
 	var t Tenant
-	err := db.pool.QueryRow(ctx, `
-		SELECT id, site_id, name, pms_config, pbx_config, settings, enabled, created_at, updated_at
-		FROM tenants WHERE id = $1
-	`, id).Scan(&t.ID, &t.SiteID, &t.Name, &t.PMSConfig, &t.PBXConfig, &t.Settings, &t.Enabled, &t.CreatedAt, &t.UpdatedAt)
-
-	if err == pgx.ErrNoRows {
-		return nil, nil
-	}
-	if err != nil {
+	if err := db.DB.WithContext(ctx).First(&t, "id = ?", id).Error; err != nil {
+		if err == gorm.ErrRecordNotFound {
+			return nil, nil
+		}
 		return nil, fmt.Errorf("querying tenant: %w", err)
 	}
 	return &t, nil
 }
 
-// ListTenants returns all tenants
 func (db *DB) ListTenants(ctx context.Context) ([]Tenant, error) {
-	rows, err := db.pool.Query(ctx, `
-		SELECT id, site_id, name, pms_config, pbx_config, settings, enabled, created_at, updated_at
-		FROM tenants ORDER BY name
-	`)
-	if err != nil {
-		return nil, fmt.Errorf("querying tenants: %w", err)
-	}
-	defer rows.Close()
-
 	var tenants []Tenant
-	for rows.Next() {
-		var t Tenant
-		if err := rows.Scan(&t.ID, &t.SiteID, &t.Name, &t.PMSConfig, &t.PBXConfig, &t.Settings, &t.Enabled, &t.CreatedAt, &t.UpdatedAt); err != nil {
-			return nil, fmt.Errorf("scanning tenant: %w", err)
-		}
-		tenants = append(tenants, t)
+	if err := db.DB.WithContext(ctx).Order("name").Find(&tenants).Error; err != nil {
+		return nil, fmt.Errorf("querying tenants: %w", err)
 	}
 	return tenants, nil
 }
 
-// CreateTenant creates a new tenant
 func (db *DB) CreateTenant(ctx context.Context, t *Tenant) error {
-	_, err := db.pool.Exec(ctx, `
-		INSERT INTO tenants (id, site_id, name, pms_config, pbx_config, settings, enabled)
-		VALUES ($1, $2, $3, $4, $5, $6, $7)
-	`, t.ID, t.SiteID, t.Name, t.PMSConfig, t.PBXConfig, t.Settings, t.Enabled)
-	if err != nil {
+	if err := db.DB.WithContext(ctx).Create(t).Error; err != nil {
 		return fmt.Errorf("creating tenant: %w", err)
 	}
 	return nil
 }
 
-// UpdateTenant updates an existing tenant
 func (db *DB) UpdateTenant(ctx context.Context, t *Tenant) error {
-	_, err := db.pool.Exec(ctx, `
-		UPDATE tenants
-		SET site_id = $2, name = $3, pms_config = $4, pbx_config = $5, settings = $6, enabled = $7, updated_at = NOW()
-		WHERE id = $1
-	`, t.ID, t.SiteID, t.Name, t.PMSConfig, t.PBXConfig, t.Settings, t.Enabled)
-	if err != nil {
+	if err := db.DB.WithContext(ctx).Model(t).Updates(map[string]interface{}{
+		"site_id":    t.SiteID,
+		"name":       t.Name,
+		"pms_config": t.PMSConfig,
+		"pbx_config": t.PBXConfig,
+		"settings":   t.Settings,
+		"enabled":    t.Enabled,
+		"updated_at": time.Now(),
+	}).Error; err != nil {
 		return fmt.Errorf("updating tenant: %w", err)
 	}
 	return nil
 }
 
-// DeleteTenant deletes a tenant by ID
 func (db *DB) DeleteTenant(ctx context.Context, id string) error {
-	_, err := db.pool.Exec(ctx, `DELETE FROM tenants WHERE id = $1`, id)
-	if err != nil {
+	if err := db.DB.WithContext(ctx).Delete(&Tenant{}, "id = ?", id).Error; err != nil {
 		return fmt.Errorf("deleting tenant: %w", err)
 	}
 	return nil
 }
 
-// =============================================================================
-// Room Mapping Repository
-// =============================================================================
-
-// RoomMapping represents a room-to-extension mapping
-type RoomMapping struct {
-	ID         int
-	TenantID   string
-	RoomNumber string
-	Extension  string
-	CreatedAt  time.Time
-	UpdatedAt  time.Time
-}
-
-// GetRoomMapping retrieves a room mapping
 func (db *DB) GetRoomMapping(ctx context.Context, tenantID, roomNumber string) (*RoomMapping, error) {
 	var rm RoomMapping
-	err := db.pool.QueryRow(ctx, `
-		SELECT id, tenant_id, room_number, extension, created_at, updated_at
-		FROM room_mappings WHERE tenant_id = $1 AND room_number = $2
-	`, tenantID, roomNumber).Scan(&rm.ID, &rm.TenantID, &rm.RoomNumber, &rm.Extension, &rm.CreatedAt, &rm.UpdatedAt)
-
-	if err == pgx.ErrNoRows {
-		return nil, nil
-	}
-	if err != nil {
+	if err := db.DB.WithContext(ctx).First(&rm, "tenant_id = ? AND room_number = ?", tenantID, roomNumber).Error; err != nil {
+		if err == gorm.ErrRecordNotFound {
+			return nil, nil
+		}
 		return nil, fmt.Errorf("querying room mapping: %w", err)
 	}
 	return &rm, nil
 }
 
-// ListRoomMappings returns all room mappings for a tenant
 func (db *DB) ListRoomMappings(ctx context.Context, tenantID string) ([]RoomMapping, error) {
-	rows, err := db.pool.Query(ctx, `
-		SELECT id, tenant_id, room_number, extension, created_at, updated_at
-		FROM room_mappings WHERE tenant_id = $1 ORDER BY room_number
-	`, tenantID)
-	if err != nil {
-		return nil, fmt.Errorf("querying room mappings: %w", err)
-	}
-	defer rows.Close()
-
 	var mappings []RoomMapping
-	for rows.Next() {
-		var rm RoomMapping
-		if err := rows.Scan(&rm.ID, &rm.TenantID, &rm.RoomNumber, &rm.Extension, &rm.CreatedAt, &rm.UpdatedAt); err != nil {
-			return nil, fmt.Errorf("scanning room mapping: %w", err)
-		}
-		mappings = append(mappings, rm)
+	if err := db.DB.WithContext(ctx).Where("tenant_id = ?", tenantID).Order("room_number").Find(&mappings).Error; err != nil {
+		return nil, fmt.Errorf("querying room mappings: %w", err)
 	}
 	return mappings, nil
 }
 
-// UpsertRoomMapping creates or updates a room mapping
 func (db *DB) UpsertRoomMapping(ctx context.Context, tenantID, roomNumber, extension string) error {
-	_, err := db.pool.Exec(ctx, `
-		INSERT INTO room_mappings (tenant_id, room_number, extension)
-		VALUES ($1, $2, $3)
+	return db.DB.WithContext(ctx).Exec(`
+		INSERT INTO room_mappings (tenant_id, room_number, extension, created_at, updated_at)
+		VALUES (?, ?, ?, NOW(), NOW())
 		ON CONFLICT (tenant_id, room_number) DO UPDATE SET
 			extension = EXCLUDED.extension,
 			updated_at = NOW()
-	`, tenantID, roomNumber, extension)
-	if err != nil {
-		return fmt.Errorf("upserting room mapping: %w", err)
-	}
-	return nil
+	`, tenantID, roomNumber, extension).Error
 }
 
-// =============================================================================
-// Guest Session Repository
-// =============================================================================
-
-// GuestSession represents an active or past guest stay
-type GuestSession struct {
-	ID            int
-	TenantID      string
-	RoomNumber    string
-	Extension     string
-	GuestName     string
-	ReservationID string
-	CheckIn       time.Time
-	CheckOut      *time.Time
-	Metadata      map[string]interface{}
-}
-
-// CreateGuestSession creates a new guest session (check-in)
 func (db *DB) CreateGuestSession(ctx context.Context, tenantID, roomNumber, extension, guestName, reservationID string, metadata map[string]interface{}) (int, error) {
 	var id int
-	err := db.pool.QueryRow(ctx, `
+	err := db.DB.WithContext(ctx).Raw(`
 		INSERT INTO guest_sessions (tenant_id, room_number, extension, guest_name, reservation_id, check_in, metadata)
-		VALUES ($1, $2, $3, $4, $5, NOW(), $6)
+		VALUES (?, ?, ?, ?, ?, NOW(), ?)
 		RETURNING id
-	`, tenantID, roomNumber, extension, guestName, reservationID, metadata).Scan(&id)
+	`, tenantID, roomNumber, extension, guestName, reservationID, metadata).Scan(&id).Error
 	if err != nil {
 		return 0, fmt.Errorf("creating guest session: %w", err)
 	}
 	return id, nil
 }
 
-// EndGuestSession marks a guest session as checked out
 func (db *DB) EndGuestSession(ctx context.Context, tenantID, roomNumber string) error {
-	_, err := db.pool.Exec(ctx, `
+	return db.DB.WithContext(ctx).Exec(`
 		UPDATE guest_sessions SET check_out = NOW()
-		WHERE tenant_id = $1 AND room_number = $2 AND check_out IS NULL
-	`, tenantID, roomNumber)
-	if err != nil {
-		return fmt.Errorf("ending guest session: %w", err)
-	}
-	return nil
+		WHERE tenant_id = ? AND room_number = ? AND check_out IS NULL
+	`, tenantID, roomNumber).Error
 }
 
-// GetActiveSession returns the current active session for a room
 func (db *DB) GetActiveSession(ctx context.Context, tenantID, roomNumber string) (*GuestSession, error) {
 	var gs GuestSession
-	err := db.pool.QueryRow(ctx, `
-		SELECT id, tenant_id, room_number, extension, guest_name, reservation_id, check_in, check_out, metadata
-		FROM guest_sessions
-		WHERE tenant_id = $1 AND room_number = $2 AND check_out IS NULL
-		ORDER BY check_in DESC LIMIT 1
-	`, tenantID, roomNumber).Scan(
-		&gs.ID, &gs.TenantID, &gs.RoomNumber, &gs.Extension, &gs.GuestName,
-		&gs.ReservationID, &gs.CheckIn, &gs.CheckOut, &gs.Metadata,
-	)
-
-	if err == pgx.ErrNoRows {
-		return nil, nil
-	}
-	if err != nil {
+	if err := db.DB.WithContext(ctx).Where("tenant_id = ? AND room_number = ? AND check_out IS NULL", tenantID, roomNumber).Order("check_in DESC").First(&gs).Error; err != nil {
+		if err == gorm.ErrRecordNotFound {
+			return nil, nil
+		}
 		return nil, fmt.Errorf("querying active session: %w", err)
 	}
 	return &gs, nil
 }
 
-// ListActiveSessions returns all active sessions for a tenant
 func (db *DB) ListActiveSessions(ctx context.Context, tenantID string) ([]GuestSession, error) {
-	rows, err := db.pool.Query(ctx, `
-		SELECT id, tenant_id, room_number, extension, guest_name, reservation_id, check_in, check_out, metadata
-		FROM guest_sessions
-		WHERE tenant_id = $1 AND check_out IS NULL
-		ORDER BY room_number, check_in DESC
-	`, tenantID)
-	if err != nil {
-		return nil, fmt.Errorf("querying active sessions: %w", err)
-	}
-	defer rows.Close()
-
 	var sessions []GuestSession
-	for rows.Next() {
-		var gs GuestSession
-		if err := rows.Scan(&gs.ID, &gs.TenantID, &gs.RoomNumber, &gs.Extension, &gs.GuestName, &gs.ReservationID, &gs.CheckIn, &gs.CheckOut, &gs.Metadata); err != nil {
-			return nil, fmt.Errorf("scanning active session: %w", err)
-		}
-		sessions = append(sessions, gs)
+	if err := db.DB.WithContext(ctx).Where("tenant_id = ? AND check_out IS NULL", tenantID).Order("room_number, check_in DESC").Find(&sessions).Error; err != nil {
+		return nil, fmt.Errorf("querying active sessions: %w", err)
 	}
 	return sessions, nil
 }
 
-// =============================================================================
-// PMS Event Log Repository
-// =============================================================================
-
-// PMSEvent represents a logged PMS event
-type PMSEvent struct {
-	ID         int64
-	TenantID   string
-	EventType  string
-	RoomNumber string
-	Extension  string
-	RawData    []byte
-	Processed  bool
-	Error      string
-	CreatedAt  time.Time
-}
-
-// LogPMSEvent records a PMS event for audit/debugging
 func (db *DB) LogPMSEvent(ctx context.Context, tenantID, eventType, roomNumber, extension string, rawData []byte) (int64, error) {
 	var id int64
-	err := db.pool.QueryRow(ctx, `
+	err := db.DB.WithContext(ctx).Raw(`
 		INSERT INTO pms_events (tenant_id, event_type, room_number, extension, raw_data, processed)
-		VALUES ($1, $2, $3, $4, $5, FALSE)
+		VALUES (?, ?, ?, ?, ?, FALSE)
 		RETURNING id
-	`, tenantID, eventType, roomNumber, extension, rawData).Scan(&id)
+	`, tenantID, eventType, roomNumber, extension, rawData).Scan(&id).Error
 	if err != nil {
 		return 0, fmt.Errorf("logging PMS event: %w", err)
 	}
 	return id, nil
 }
 
-// MarkEventProcessed marks an event as successfully processed
 func (db *DB) MarkEventProcessed(ctx context.Context, eventID int64) error {
-	_, err := db.pool.Exec(ctx, `
-		UPDATE pms_events SET processed = TRUE WHERE id = $1
-	`, eventID)
-	return err
+	return db.DB.WithContext(ctx).Exec("UPDATE pms_events SET processed = TRUE WHERE id = ?", eventID).Error
 }
 
-// MarkEventFailed marks an event as failed with an error message
 func (db *DB) MarkEventFailed(ctx context.Context, eventID int64, errMsg string) error {
-	_, err := db.pool.Exec(ctx, `
-		UPDATE pms_events SET processed = TRUE, error = $2 WHERE id = $1
-	`, eventID, errMsg)
-	return err
+	return db.DB.WithContext(ctx).Exec("UPDATE pms_events SET processed = TRUE, error = ? WHERE id = ?", errMsg, eventID).Error
 }
 
-// GetRecentEvents returns recent PMS events for a tenant
 func (db *DB) GetRecentEvents(ctx context.Context, tenantID string, limit int) ([]PMSEvent, error) {
-	rows, err := db.pool.Query(ctx, `
-		SELECT id, tenant_id, event_type, room_number, extension, raw_data, processed, COALESCE(error, ''), created_at
-		FROM pms_events WHERE tenant_id = $1
-		ORDER BY created_at DESC LIMIT $2
-	`, tenantID, limit)
-	if err != nil {
-		return nil, fmt.Errorf("querying PMS events: %w", err)
-	}
-	defer rows.Close()
-
 	var events []PMSEvent
-	for rows.Next() {
-		var e PMSEvent
-		if err := rows.Scan(&e.ID, &e.TenantID, &e.EventType, &e.RoomNumber, &e.Extension, &e.RawData, &e.Processed, &e.Error, &e.CreatedAt); err != nil {
-			return nil, fmt.Errorf("scanning PMS event: %w", err)
-		}
-		events = append(events, e)
+	if err := db.DB.WithContext(ctx).Where("tenant_id = ?", tenantID).Order("created_at DESC").Limit(limit).Find(&events).Error; err != nil {
+		return nil, fmt.Errorf("querying PMS events: %w", err)
 	}
 	return events, nil
 }

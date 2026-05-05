@@ -80,6 +80,9 @@ func main() {
 		if err != nil {
 			log.Warn().Err(err).Msg("Database connection failed, running without persistence")
 		} else {
+			if err := db.AutoMigrate(database); err != nil {
+				log.Warn().Err(err).Msg("Auto-migration failed, continuing with existing schema")
+			}
 			defer database.Close()
 		}
 	} else {
@@ -172,7 +175,8 @@ func runHealthCheck(cfg *config.Config) int {
 		defer database.Close()
 
 		// Validate database connectivity
-		if err := database.Pool().Ping(ctx); err != nil {
+		sqlDB, err := database.DB.DB()
+		if err != nil || sqlDB.PingContext(ctx) != nil {
 			log.Error().Err(err).Msg("Health check: database ping failed")
 			return 1
 		}

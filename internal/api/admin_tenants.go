@@ -158,9 +158,9 @@ func (s *AdminServer) createTenant(c *fiber.Ctx) error {
 		ID:        req.ID,
 		SiteID:    req.SiteID,
 		Name:      req.Name,
-		PMSConfig: req.PMSConfig,
-		PBXConfig: req.PBXConfig,
-		Settings:  req.Settings,
+		PMSConfig: mapToJSON(req.PMSConfig),
+		PBXConfig: mapToJSON(req.PBXConfig),
+		Settings:  mapToJSON(req.Settings),
 		Enabled:   req.Enabled,
 	}
 	if err := s.db.CreateTenant(c.Context(), t); err != nil {
@@ -221,16 +221,16 @@ func (s *AdminServer) updateTenant(c *fiber.Ctx) error {
 		if err := validatePMSConfig(req.PMSConfig); err != nil {
 			return writeError(c, err.Error(), "VALIDATION_ERROR", fiber.StatusBadRequest)
 		}
-		existing.PMSConfig = req.PMSConfig
+		existing.PMSConfig = mapToJSON(req.PMSConfig)
 	}
 	if req.PBXConfig != nil {
 		if err := validatePBXConfig(req.PBXConfig); err != nil {
 			return writeError(c, err.Error(), "VALIDATION_ERROR", fiber.StatusBadRequest)
 		}
-		existing.PBXConfig = req.PBXConfig
+		existing.PBXConfig = mapToJSON(req.PBXConfig)
 	}
 	if req.Settings != nil {
-		existing.Settings = req.Settings
+		existing.Settings = mapToJSON(req.Settings)
 	}
 	if req.Enabled != nil {
 		existing.Enabled = *req.Enabled
@@ -332,9 +332,9 @@ func (s *AdminServer) importTenants(c *fiber.Ctx) error {
 		t := &db.Tenant{
 			ID:        req.ID,
 			Name:      req.Name,
-			PMSConfig: req.PMSConfig,
-			PBXConfig: req.PBXConfig,
-			Settings:  req.Settings,
+			PMSConfig: mapToJSON(req.PMSConfig),
+			PBXConfig: mapToJSON(req.PBXConfig),
+			Settings:  mapToJSON(req.Settings),
 			Enabled:   req.Enabled,
 		}
 		if err := s.db.CreateTenant(c.Context(), t); err != nil {
@@ -395,15 +395,37 @@ func (e *validationError) Error() string {
 }
 
 func toTenantResponse(t db.Tenant) tenantResponse {
+	pmsCfg := parseJSONMap(t.PMSConfig)
+	pbxCfg := parseJSONMap(t.PBXConfig)
+	settings := parseJSONMap(t.Settings)
 	return tenantResponse{
 		ID:        t.ID,
 		SiteID:    t.SiteID,
 		Name:      t.Name,
-		PMSConfig: t.PMSConfig,
-		PBXConfig: t.PBXConfig,
-		Settings:  t.Settings,
+		PMSConfig: pmsCfg,
+		PBXConfig: pbxCfg,
+		Settings:  settings,
 		Enabled:   t.Enabled,
 		CreatedAt: t.CreatedAt.Format("2006-01-02T15:04:05Z"),
 		UpdatedAt: t.UpdatedAt.Format("2006-01-02T15:04:05Z"),
 	}
+}
+
+func parseJSONMap(jsonStr string) map[string]interface{} {
+	if jsonStr == "" {
+		return map[string]interface{}{}
+	}
+	var m map[string]interface{}
+	if err := json.Unmarshal([]byte(jsonStr), &m); err != nil {
+		return map[string]interface{}{}
+	}
+	return m
+}
+
+func mapToJSON(m map[string]interface{}) string {
+	if m == nil {
+		return "{}"
+	}
+	b, _ := json.Marshal(m)
+	return string(b)
 }
