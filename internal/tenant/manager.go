@@ -2,6 +2,7 @@ package tenant
 
 import (
 	"context"
+	"encoding/json"
 	"fmt"
 	"strconv"
 	"strings"
@@ -83,56 +84,59 @@ func (m *Manager) dbTenantToConfig(t db.Tenant) config.TenantConfig {
 		ID:     t.ID,
 		Name:   t.Name,
 		SiteID: pointerString(t.SiteID),
-		PMS:    pmsConfigFromMap(t.PMSConfig),
-		PBX:    pbxConfigFromMap(t.PBXConfig),
+		PMS:    pmsConfigFromJSON(t.PMSConfig),
+		PBX:    pbxConfigFromJSON(t.PBXConfig),
 	}
 	// Convert generic map to TenantSettings if possible
-	if settingsMap, ok := t.Settings["features"].(map[string]interface{}); ok {
-		if wakeUp, ok := settingsMap["wake_up_calls"].(bool); ok {
-			tc.Settings.Features.WakeUpCalls = wakeUp
+	var settings map[string]interface{}
+	if err := json.Unmarshal([]byte(t.Settings), &settings); err == nil {
+		if features, ok := settings["features"].(map[string]interface{}); ok {
+			if wakeUp, ok := features["wake_up_calls"].(bool); ok {
+				tc.Settings.Features.WakeUpCalls = wakeUp
+			}
+			if roomClean, ok := features["room_clean_code"].(bool); ok {
+				tc.Settings.Features.RoomCleanCode = roomClean
+			}
+			if dnd, ok := features["dnd"].(bool); ok {
+				tc.Settings.Features.DND = dnd
+			}
+			if mwi, ok := features["mwi"].(bool); ok {
+				tc.Settings.Features.MWI = mwi
+			}
+			if voicemail, ok := features["voicemail"].(bool); ok {
+				tc.Settings.Features.Voicemail = voicemail
+			}
+			if callForward, ok := features["call_forward"].(bool); ok {
+				tc.Settings.Features.CallForward = callForward
+			}
 		}
-		if roomClean, ok := settingsMap["room_clean_code"].(bool); ok {
-			tc.Settings.Features.RoomCleanCode = roomClean
+		if accessCodes, ok := settings["access_codes"].(map[string]interface{}); ok {
+			if code, ok := accessCodes["wake_up"].(string); ok {
+				tc.Settings.AccessCodes.WakeUp = code
+			}
+			if code, ok := accessCodes["room_clean"].(string); ok {
+				tc.Settings.AccessCodes.RoomClean = code
+			}
+			if code, ok := accessCodes["room_service"].(string); ok {
+				tc.Settings.AccessCodes.RoomService = code
+			}
+			if code, ok := accessCodes["do_not_disturb"].(string); ok {
+				tc.Settings.AccessCodes.DoNotDisturb = code
+			}
+			if code, ok := accessCodes["voicemail"].(string); ok {
+				tc.Settings.AccessCodes.Voicemail = code
+			}
 		}
-		if dnd, ok := settingsMap["dnd"].(bool); ok {
-			tc.Settings.Features.DND = dnd
+		if roomPrefix, ok := settings["room_prefix"].(string); ok {
+			tc.Settings.RoomPrefix = roomPrefix
 		}
-		if mwi, ok := settingsMap["mwi"].(bool); ok {
-			tc.Settings.Features.MWI = mwi
-		}
-		if voicemail, ok := settingsMap["voicemail"].(bool); ok {
-			tc.Settings.Features.Voicemail = voicemail
-		}
-		if callForward, ok := settingsMap["call_forward"].(bool); ok {
-			tc.Settings.Features.CallForward = callForward
-		}
-	}
-	if accessCodes, ok := t.Settings["access_codes"].(map[string]interface{}); ok {
-		if code, ok := accessCodes["wake_up"].(string); ok {
-			tc.Settings.AccessCodes.WakeUp = code
-		}
-		if code, ok := accessCodes["room_clean"].(string); ok {
-			tc.Settings.AccessCodes.RoomClean = code
-		}
-		if code, ok := accessCodes["room_service"].(string); ok {
-			tc.Settings.AccessCodes.RoomService = code
-		}
-		if code, ok := accessCodes["do_not_disturb"].(string); ok {
-			tc.Settings.AccessCodes.DoNotDisturb = code
-		}
-		if code, ok := accessCodes["voicemail"].(string); ok {
-			tc.Settings.AccessCodes.Voicemail = code
-		}
-	}
-	if roomPrefix, ok := t.Settings["room_prefix"].(string); ok {
-		tc.Settings.RoomPrefix = roomPrefix
-	}
-	if extRange, ok := t.Settings["extension_range"].([]interface{}); ok && len(extRange) == 2 {
-		if min, ok := extRange[0].(float64); ok {
-			tc.Settings.ExtensionRange[0] = int(min)
-		}
-		if max, ok := extRange[1].(float64); ok {
-			tc.Settings.ExtensionRange[1] = int(max)
+		if extRange, ok := settings["extension_range"].([]interface{}); ok && len(extRange) == 2 {
+			if min, ok := extRange[0].(float64); ok {
+				tc.Settings.ExtensionRange[0] = int(min)
+			}
+			if max, ok := extRange[1].(float64); ok {
+				tc.Settings.ExtensionRange[1] = int(max)
+			}
 		}
 	}
 	return tc
@@ -145,8 +149,12 @@ func pointerString(s *string) string {
 	return *s
 }
 
-// pmsConfigFromMap converts a map to PMSConfig
-func pmsConfigFromMap(m map[string]interface{}) config.PMSConfig {
+// pmsConfigFromJSON parses PMS config from JSON string
+func pmsConfigFromJSON(jsonStr string) config.PMSConfig {
+	var m map[string]interface{}
+	if err := json.Unmarshal([]byte(jsonStr), &m); err != nil {
+		return config.PMSConfig{}
+	}
 	cfg := config.PMSConfig{}
 	if v, ok := m["protocol"].(string); ok {
 		cfg.Protocol = v
@@ -166,8 +174,12 @@ func pmsConfigFromMap(m map[string]interface{}) config.PMSConfig {
 	return cfg
 }
 
-// pbxConfigFromMap converts a map to PBXConfig
-func pbxConfigFromMap(m map[string]interface{}) config.PBXConfig {
+// pbxConfigFromJSON parses PBX config from JSON string
+func pbxConfigFromJSON(jsonStr string) config.PBXConfig {
+	var m map[string]interface{}
+	if err := json.Unmarshal([]byte(jsonStr), &m); err != nil {
+		return config.PBXConfig{}
+	}
 	cfg := config.PBXConfig{}
 	if v, ok := m["type"].(string); ok {
 		cfg.Type = v

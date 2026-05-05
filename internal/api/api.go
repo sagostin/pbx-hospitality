@@ -91,10 +91,11 @@ func NewRouterWithDB(tm *tenant.Manager, cfg *config.Config, database *db.DB) ht
 				if !t.Enabled {
 					continue
 				}
-				protocol, _ := t.PMSConfig["protocol"].(string)
+				pmsCfg := parseJSONMap(t.PMSConfig)
+				protocol, _ := pmsCfg["protocol"].(string)
 				if protocol == "tigertms" {
-					authToken, _ := t.PMSConfig["auth_token"].(string)
-					pathPrefix, _ := t.PMSConfig["path_prefix"].(string)
+					authToken, _ := pmsCfg["auth_token"].(string)
+					pathPrefix, _ := pmsCfg["path_prefix"].(string)
 					adapter, err := pms.NewAdapter("tigertms", "", 0, tigertms.WithAuthToken(authToken))
 					if err != nil {
 						log.Error().Err(err).Str("tenant", t.ID).Msg("Failed to create TigerTMS adapter for API router")
@@ -133,7 +134,8 @@ func (s *Server) health(c *fiber.Ctx) error {
 	}
 
 	if s.db != nil {
-		if err := s.db.Pool().Ping(c.Context()); err != nil {
+		sqlDB, err := s.db.DB.DB()
+		if err != nil || sqlDB.PingContext(c.Context()) != nil {
 			status["database"] = "error"
 			status["status"] = "degraded"
 		} else {

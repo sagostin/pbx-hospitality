@@ -1,6 +1,7 @@
 package api
 
 import (
+	"encoding/json"
 	"regexp"
 
 	"github.com/gofiber/fiber/v2"
@@ -128,7 +129,7 @@ func (s *AdminServer) createSite(c *fiber.Ctx) error {
 		ID:       req.ID,
 		Name:     req.Name,
 		AuthCode: req.AuthCode, // In production, this should be hashed
-		Settings: req.Settings,
+		Settings: siteMapToJSON(req.Settings),
 		Enabled:  req.Enabled,
 	}
 	if err := s.db.CreateSite(c.Context(), site); err != nil {
@@ -181,7 +182,7 @@ func (s *AdminServer) updateSite(c *fiber.Ctx) error {
 		existing.AuthCode = *req.AuthCode // In production, hash this
 	}
 	if req.Settings != nil {
-		existing.Settings = req.Settings
+		existing.Settings = siteMapToJSON(req.Settings)
 	}
 	if req.Enabled != nil {
 		existing.Enabled = *req.Enabled
@@ -224,13 +225,33 @@ func (s *AdminServer) deleteSite(c *fiber.Ctx) error {
 }
 
 func toSiteResponse(s db.Site) siteResponse {
+	settings := parseSiteJSONMap(s.Settings)
 	return siteResponse{
 		ID:        s.ID,
 		Name:      s.Name,
 		AuthCode:  "", // Never expose
-		Settings:  s.Settings,
+		Settings:  settings,
 		Enabled:   s.Enabled,
 		CreatedAt: s.CreatedAt.Format("2006-01-02T15:04:05Z"),
 		UpdatedAt: s.UpdatedAt.Format("2006-01-02T15:04:05Z"),
 	}
+}
+
+func parseSiteJSONMap(jsonStr string) map[string]interface{} {
+	if jsonStr == "" {
+		return map[string]interface{}{}
+	}
+	var m map[string]interface{}
+	if err := json.Unmarshal([]byte(jsonStr), &m); err != nil {
+		return map[string]interface{}{}
+	}
+	return m
+}
+
+func siteMapToJSON(m map[string]interface{}) string {
+	if m == nil {
+		return "{}"
+	}
+	b, _ := json.Marshal(m)
+	return string(b)
 }
