@@ -61,6 +61,14 @@ func NewRouterWithDB(tm *tenant.Manager, cfg *config.Config, database *db.DB) ht
 	adminGroup.Delete("/:id", admin.deleteTenant)
 	adminGroup.Post("/import", admin.importTenants)
 
+	adminSitesGroup := app.Group("/admin/sites")
+	adminSitesGroup.Use(adminKeyMiddleware(cfg.Server.AdminAPIKey))
+	adminSitesGroup.Get("/", admin.listSites)
+	adminSitesGroup.Get("/:id", admin.getSite)
+	adminSitesGroup.Post("/", admin.createSite)
+	adminSitesGroup.Put("/:id", admin.updateSite)
+	adminSitesGroup.Delete("/:id", admin.deleteSite)
+
 	apiV1 := app.Group("/api/v1")
 	tenants := apiV1.Group("/tenants")
 	tenants.Get("/", s.listTenants)

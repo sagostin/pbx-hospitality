@@ -72,30 +72,58 @@ type PMSConfig struct {
 
 // PBXConfig holds PBX connection settings
 type PBXConfig struct {
-	Type      string `yaml:"type"`
-	ARIURL    string `yaml:"ari_url"`
-	ARIWSUrl  string `yaml:"ari_ws_url"`
-	ARIUser   string `yaml:"ari_user"`
-	ARIPass   string `yaml:"ari_pass"`
-	AppName   string `yaml:"app_name"`
-	APIURL    string `yaml:"api_url"`
-	APIKey    string `yaml:"api_key"`
-	TenantID  string `yaml:"tenant_id"`
-	AuthURL   string `yaml:"auth_url"`
-	Username  string `yaml:"username"`
-	Password  string `yaml:"password"`
+	Type          string `yaml:"type"`
+	ARIURL        string `yaml:"ari_url"`
+	ARIWSUrl      string `yaml:"ari_ws_url"`
+	ARIUser       string `yaml:"ari_user"`
+	ARIPass       string `yaml:"ari_pass"`
+	AppName       string `yaml:"app_name"`
+	APIURL        string `yaml:"api_url"`
+	APIKey        string `yaml:"api_key"`
+	TenantID      string `yaml:"tenant_id"`
+	AuthURL       string `yaml:"auth_url"`
+	Username      string `yaml:"username"`
+	Password      string `yaml:"password"`
 	WebhookSecret string `yaml:"webhook_secret"`
 }
 
 // TenantConfig holds per-tenant configuration
 type TenantConfig struct {
-	ID         string     `yaml:"id"`
-	Name       string     `yaml:"name"`
-	PMS        PMSConfig  `yaml:"pms"`
-	PBX        PBXConfig  `yaml:"pbx"`
-	RoomPrefix string     `yaml:"room_prefix"`
-	Timezone   string     `yaml:"timezone"`
-	Settings   map[string]interface{} `yaml:"settings"`
+	ID         string                    `yaml:"id"`
+	Name       string                    `yaml:"name"`
+	SiteID     string                    `yaml:"site_id"`
+	PMS        PMSConfig                 `yaml:"pms"`
+	PBX        PBXConfig                 `yaml:"pbx"`
+	RoomPrefix string                    `yaml:"room_prefix"`
+	Timezone   string                    `yaml:"timezone"`
+	Settings   TenantSettings            `yaml:"settings"`
+}
+
+// TenantSettings holds feature flags and access codes for a tenant
+type TenantSettings struct {
+	RoomPrefix     string            `yaml:"room_prefix"`      // Prepended to room numbers for extension mapping
+	ExtensionRange [2]int           `yaml:"extension_range"`   // Min/max extension numbers
+	Features       TenantFeatures    `yaml:"features"`         // Enabled features
+	AccessCodes    AccessCodes       `yaml:"access_codes"`     // Feature access codes
+}
+
+// TenantFeatures specifies which features are enabled for a tenant
+type TenantFeatures struct {
+	WakeUpCalls   bool `yaml:"wake_up_calls"`
+	RoomCleanCode bool `yaml:"room_clean_code"` // Code to signal room needs cleaning
+	DND           bool `yaml:"dnd"`
+	MWI           bool `yaml:"mwi"`
+	Voicemail     bool `yaml:"voicemail"`
+	CallForward   bool `yaml:"call_forward"`
+}
+
+// AccessCodes defines feature access codes
+type AccessCodes struct {
+	WakeUp         string `yaml:"wake_up"`           // e.g., "*411"
+	RoomClean      string `yaml:"room_clean"`        // e.g., "*60"
+	RoomService    string `yaml:"room_service"`      // e.g., "*70"
+	DoNotDisturb   string `yaml:"do_not_disturb"`    // e.g., "*78"
+	Voicemail      string `yaml:"voicemail"`          // e.g., "*98"
 }
 
 // DSN returns the PostgreSQL connection string
