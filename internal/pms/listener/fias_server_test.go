@@ -9,16 +9,49 @@ import (
 	"time"
 
 	"github.com/sagostin/pbx-hospitality/internal/pms"
-	"github.com/sagostin/pbx-hospitality/internal/pms/fias"
 )
 
 func TestFiasListenerDefaults(t *testing.T) {
-	l := NewListener("localhost", FiasDefaultPort)
+	events := make(chan pms.Event, 100)
+	l, err := NewFiasListener(pms.ListenerConfig{ListenHost: "localhost", ListenPort: FiasDefaultPort}, events)
+	if err != nil {
+		t.Fatalf("NewFiasListener() error = %v", err)
+	}
 	if l.Host() != "localhost" {
 		t.Errorf("Host() = %q, want %q", l.Host(), "localhost")
 	}
 	if l.Port() != FiasDefaultPort {
 		t.Errorf("Port() = %d, want %d", l.Port(), FiasDefaultPort)
+	}
+}
+
+func TestFiasListenerIsAllowed(t *testing.T) {
+	tests := []struct {
+		name      string
+		remoteIP  string
+		allowedIPs []string
+		want      bool
+	}{
+		{"empty allowlist", "192.168.1.1", nil, true},
+		{"empty allowlist exact", "192.168.1.1", []string{}, true},
+		{"IP in allowlist", "192.168.1.1", []string{"192.168.1.1"}, true},
+		{"IP not in allowlist", "192.168.1.1", []string{"192.168.1.2"}, false},
+		{"multiple IPs, first match", "192.168.1.1", []string{"192.168.1.1", "192.168.1.100"}, true},
+		{"multiple IPs, second match", "192.168.1.1", []string{"192.168.1.2", "192.168.1.1"}, true},
+		{"multiple IPs, no match", "192.168.1.1", []string{"192.168.1.2", "192.168.1.3"}, false},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			events := make(chan pms.Event, 100)
+			l, err := NewFiasListener(pms.ListenerConfig{ListenHost: "localhost", ListenPort: 5000, AllowedPMSIPs: tt.allowedIPs}, events)
+			if err != nil {
+				t.Fatalf("NewFiasListener() error = %v", err)
+			}
+			if got := l.isAllowed(tt.remoteIP); got != tt.want {
+				t.Errorf("isAllowed(%q) = %v, want %v", tt.remoteIP, got, tt.want)
+			}
+		})
 	}
 }
 
@@ -92,7 +125,7 @@ func TestFiasIsAllowed(t *testing.T) {
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			l := NewListener("localhost", 5000)
+			l := newTestFiasListener("localhost", 5000)
 			l.allowed = tt.allowedIPs
 			if got := l.isAllowed(tt.remoteIP); got != tt.want {
 				t.Errorf("isAllowed(%q) = %v, want %v", tt.remoteIP, got, tt.want)

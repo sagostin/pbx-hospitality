@@ -31,10 +31,10 @@ func init() {
 	pms.RegisterListener("fias", NewFiasListener)
 }
 
-// Listener implements a TCP server that listens for incoming FIAS PMS connections.
+// FiasListener implements a TCP server that listens for incoming FIAS PMS connections.
 // Each connection is handled independently, parsing pipe-delimited records and
 // converting them to PMS events for downstream processing.
-type Listener struct {
+type FiasListener struct {
 	host    string
 	port    int
 	events  chan pms.Event
@@ -46,18 +46,9 @@ type Listener struct {
 	closed  bool
 }
 
-// NewListener creates a new FIAS PMS Listener TCP server.
-func NewListener(host string, port int) *Listener {
-	return &Listener{
-		host:   host,
-		port:   port,
-		events: make(chan pms.Event, 100),
-	}
-}
-
-// NewFiasListener is the factory function registered with the PMS listener registry.
+// NewFiasListener creates a new FIAS PMS Listener TCP server.
 func NewFiasListener(cfg pms.ListenerConfig, events chan pms.Event) (pms.Listener, error) {
-	l := &Listener{
+	l := &FiasListener{
 		host:    cfg.ListenHost,
 		port:    cfg.ListenPort,
 		events:  events,
@@ -69,13 +60,27 @@ func NewFiasListener(cfg pms.ListenerConfig, events chan pms.Event) (pms.Listene
 	return l, nil
 }
 
+// NewFiasListenerWithDefaultPort is a test helper that creates a listener with a default port
+func NewFiasListenerWithDefaultPort(host string, port int) *FiasListener {
+	events := make(chan pms.Event, 100)
+	l := &FiasListener{
+		host:   host,
+		port:   port,
+		events: events,
+	}
+	if l.port == 0 {
+		l.port = FiasDefaultPort
+	}
+	return l
+}
+
 // Events returns the channel of parsed PMS events from all connections.
-func (l *Listener) Events() <-chan pms.Event {
+func (l *FiasListener) Events() <-chan pms.Event {
 	return l.events
 }
 
 // isAllowed checks if the remote IP is allowed to connect.
-func (l *Listener) isAllowed(remoteIP string) bool {
+func (l *FiasListener) isAllowed(remoteIP string) bool {
 	if len(l.allowed) == 0 {
 		return true
 	}
@@ -89,7 +94,7 @@ func (l *Listener) isAllowed(remoteIP string) bool {
 
 // Listen starts the TCP server and accepts incoming connections.
 // It blocks until the context is cancelled or an error occurs.
-func (l *Listener) Listen(ctx context.Context) error {
+func (l *FiasListener) Listen(ctx context.Context) error {
 	l.mu.Lock()
 	if l.closed {
 		l.mu.Unlock()
@@ -111,7 +116,7 @@ func (l *Listener) Listen(ctx context.Context) error {
 	log.Info().
 		Str("host", l.host).
 		Int("port", l.port).
-		Msg("FIAS PMS Listener started")
+		Msg("FIAS PMS FiasListener started")
 
 	// Accept loop
 	for {
@@ -133,7 +138,7 @@ func (l *Listener) Listen(ctx context.Context) error {
 				// Deadline hit, check context and continue
 				continue
 			}
-			log.Error().Err(err).Msg("Accept error on FIAS PMS Listener")
+			log.Error().Err(err).Msg("Accept error on FIAS PMS FiasListener")
 			continue
 		}
 
@@ -148,7 +153,7 @@ func (l *Listener) Listen(ctx context.Context) error {
 
 // handleConnection processes a single FIAS PMS TCP connection.
 // It reads line-delimited records, handles link handshake, and emits events.
-func (l *Listener) handleConnection(ctx context.Context, conn net.Conn) {
+func (l *FiasListener) handleConnection(ctx context.Context, conn net.Conn) {
 	defer conn.Close()
 
 	remoteAddr := conn.RemoteAddr().String()
@@ -250,7 +255,7 @@ func (l *Listener) handleConnection(ctx context.Context, conn net.Conn) {
 
 // handleLinkRecord processes LR/LS/LA/LE records for a connection.
 // Returns the updated list of linked records for this connection.
-func (l *Listener) handleLinkRecord(line string, conn net.Conn, linkedRecords []string) []string {
+func (l *FiasListener) handleLinkRecord(line string, conn net.Conn, linkedRecords []string) []string {
 	fields := strings.Split(line, "|")
 	if len(fields) == 0 {
 		return linkedRecords
@@ -291,7 +296,7 @@ func (l *Listener) handleLinkRecord(line string, conn net.Conn, linkedRecords []
 }
 
 // Close stops the listener and closes all active connections.
-func (l *Listener) Close() error {
+func (l *FiasListener) Close() error {
 	l.mu.Lock()
 	defer l.mu.Unlock()
 
@@ -317,17 +322,17 @@ func (l *Listener) Close() error {
 	log.Info().
 		Str("host", l.host).
 		Int("port", l.port).
-		Msg("FIAS PMS Listener stopped")
+		Msg("FIAS PMS FiasListener stopped")
 
 	return nil
 }
 
 // Host returns the listen address.
-func (l *Listener) Host() string {
+func (l *FiasListener) Host() string {
 	return l.host
 }
 
 // Port returns the listen port.
-func (l *Listener) Port() int {
+func (l *FiasListener) Port() int {
 	return l.port
 }

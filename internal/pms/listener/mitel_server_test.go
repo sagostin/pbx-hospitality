@@ -12,7 +12,11 @@ import (
 )
 
 func TestListenerDefaults(t *testing.T) {
-	l := NewListener("localhost", DefaultPort)
+	events := make(chan pms.Event, 100)
+	l, err := NewMitelListener(pms.ListenerConfig{ListenHost: "localhost", ListenPort: DefaultPort}, events)
+	if err != nil {
+		t.Fatalf("NewMitelListener() error = %v", err)
+	}
 	if l.Host() != "localhost" {
 		t.Errorf("Host() = %q, want %q", l.Host(), "localhost")
 	}
@@ -142,7 +146,7 @@ const (
 
 func TestListenerIntegration(t *testing.T) {
 	// Start listener on random port
-	ln := NewListener("localhost", 0)
+	ln := newTestMitelListener("localhost", 0)
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
 
@@ -464,7 +468,7 @@ func TestListenerAllowedIPs(t *testing.T) {
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			l := NewListener("localhost", 0)
+			l := newTestMitelListener("localhost", 0)
 			l.allowed = tt.allowed
 			if got := l.isAllowed(tt.ip); got != tt.expected {
 				t.Errorf("isAllowed(%q) = %v, want %v", tt.ip, got, tt.expected)

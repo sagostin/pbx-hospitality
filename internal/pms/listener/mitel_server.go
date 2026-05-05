@@ -33,10 +33,10 @@ func init() {
 	pms.RegisterListener("mitel", NewMitelListener)
 }
 
-// Listener implements a TCP server that listens for incoming Mitel PMS connections.
+// MitelListener implements a TCP server that listens for incoming Mitel PMS connections.
 // Each connection is handled independently, parsing STX/ETX framed messages and
 // converting them to PMS events for downstream processing.
-type Listener struct {
+type MitelListener struct {
 	host    string
 	port    int
 	events  chan pms.Event
@@ -48,18 +48,9 @@ type Listener struct {
 	closed  bool
 }
 
-// NewListener creates a new PMS Listener TCP server.
-func NewListener(host string, port int) *Listener {
-	return &Listener{
-		host:   host,
-		port:   port,
-		events: make(chan pms.Event, 100),
-	}
-}
-
 // NewMitelListener is the factory function registered with the PMS listener registry.
 func NewMitelListener(cfg pms.ListenerConfig, events chan pms.Event) (pms.Listener, error) {
-	l := &Listener{
+	l := &MitelListener{
 		host:    cfg.ListenHost,
 		port:    cfg.ListenPort,
 		events:  events,
@@ -71,13 +62,27 @@ func NewMitelListener(cfg pms.ListenerConfig, events chan pms.Event) (pms.Listen
 	return l, nil
 }
 
+// NewMitelListenerWithDefaults is a test helper that creates a listener with default port
+func NewMitelListenerWithDefaults(host string, port int) *MitelListener {
+	events := make(chan pms.Event, 100)
+	l := &MitelListener{
+		host:   host,
+		port:   port,
+		events: events,
+	}
+	if l.port == 0 {
+		l.port = DefaultPort
+	}
+	return l
+}
+
 // Events returns the channel of parsed PMS events from all connections.
-func (l *Listener) Events() <-chan pms.Event {
+func (l *MitelListener) Events() <-chan pms.Event {
 	return l.events
 }
 
 // isAllowed checks if the remote IP is allowed to connect.
-func (l *Listener) isAllowed(remoteIP string) bool {
+func (l *MitelListener) isAllowed(remoteIP string) bool {
 	if len(l.allowed) == 0 {
 		return true
 	}
@@ -91,7 +96,7 @@ func (l *Listener) isAllowed(remoteIP string) bool {
 
 // Listen starts the TCP server and accepts incoming connections.
 // It blocks until the context is cancelled or an error occurs.
-func (l *Listener) Listen(ctx context.Context) error {
+func (l *MitelListener) Listen(ctx context.Context) error {
 	l.mu.Lock()
 	if l.closed {
 		l.mu.Unlock()
@@ -113,7 +118,7 @@ func (l *Listener) Listen(ctx context.Context) error {
 	log.Info().
 		Str("host", l.host).
 		Int("port", l.port).
-		Msg("PMS Listener started")
+		Msg("PMS MitelListener started")
 
 	// Accept loop
 	for {
@@ -135,7 +140,7 @@ func (l *Listener) Listen(ctx context.Context) error {
 				// Deadline hit, check context and continue
 				continue
 			}
-			log.Error().Err(err).Msg("Accept error on PMS Listener")
+			log.Error().Err(err).Msg("Accept error on PMS MitelListener")
 			continue
 		}
 
@@ -150,7 +155,7 @@ func (l *Listener) Listen(ctx context.Context) error {
 
 // handleConnection processes a single PMS TCP connection.
 // It reads STX/ETX framed messages, sends ACK/NAK responses, and emits events.
-func (l *Listener) handleConnection(ctx context.Context, conn net.Conn) {
+func (l *MitelListener) handleConnection(ctx context.Context, conn net.Conn) {
 	defer conn.Close()
 
 	remoteAddr := conn.RemoteAddr().String()
@@ -284,7 +289,7 @@ func (l *Listener) handleConnection(ctx context.Context, conn net.Conn) {
 
 // sendResponse sends an ACK or NAK response to the PMS.
 // Returns false if the write fails (connection should be closed).
-func (l *Listener) sendResponse(conn net.Conn, response byte, remoteAddr string) bool {
+func (l *MitelListener) sendResponse(conn net.Conn, response byte, remoteAddr string) bool {
 	conn.SetWriteDeadline(time.Now().Add(ACKTimeout))
 	if _, err := conn.Write([]byte{response}); err != nil {
 		log.Warn().
@@ -297,7 +302,7 @@ func (l *Listener) sendResponse(conn net.Conn, response byte, remoteAddr string)
 }
 
 // Close stops the listener and closes all active connections.
-func (l *Listener) Close() error {
+func (l *MitelListener) Close() error {
 	l.mu.Lock()
 	defer l.mu.Unlock()
 
@@ -323,18 +328,18 @@ func (l *Listener) Close() error {
 	log.Info().
 		Str("host", l.host).
 		Int("port", l.port).
-		Msg("PMS Listener stopped")
+		Msg("PMS MitelListener stopped")
 
 	return nil
 }
 
 // Host returns the listen address.
-func (l *Listener) Host() string {
+func (l *MitelListener) Host() string {
 	return l.host
 }
 
 // Port returns the listen port.
-func (l *Listener) Port() int {
+func (l *MitelListener) Port() int {
 	return l.port
 }
 

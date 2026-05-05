@@ -1,7 +1,6 @@
 package api
 
 import (
-	"encoding/json"
 	"net/http"
 	"strconv"
 	"time"
@@ -111,7 +110,7 @@ func NewRouterWithDB(tm *tenant.Manager, cfg *config.Config, database *db.DB) ht
 
 	app.Post("/tigertms/:tenant/API/*", s.handleTigerTMS)
 
-	return app
+	return adaptor.FiberApp(app)
 }
 
 func (s *Server) health(c *fiber.Ctx) error {
@@ -425,7 +424,11 @@ func (s *Server) handlePBXWebhook(c *fiber.Ctx) error {
 		return c.Status(fiber.StatusBadRequest).SendString("webhook not supported for this PBX type")
 	}
 
-	if err := webhookProvider.HandleWebhook(c.Request()); err != nil {
+	freshReq, err := adaptor.ConvertRequest(c, false)
+	if err != nil {
+		return c.Status(fiber.StatusBadRequest).SendString("failed to process request")
+	}
+	if err := webhookProvider.HandleWebhook(freshReq); err != nil {
 		log.Error().Err(err).Str("tenant", tenantID).Msg("Failed to process PBX webhook")
 		return c.Status(fiber.StatusBadRequest).SendString("webhook processing failed")
 	}
@@ -449,6 +452,7 @@ func (s *Server) handleTigerTMS(c *fiber.Ctx) error {
 		return c.Status(fiber.StatusNotFound).SendString("tenant not found")
 	}
 
-	targetApp.Handler()(c.FiberContext())
+	adaptor.CopyContextToFiberContext(c.Context(), c.Context())
+	targetApp.Handler()(c.Context())
 	return nil
 }

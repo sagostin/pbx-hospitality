@@ -61,6 +61,43 @@ type LoggingConfig struct {
 	Format string `yaml:"format"`
 }
 
+// PMSConfig holds PMS connection settings
+type PMSConfig struct {
+	Protocol  string `yaml:"protocol"`
+	Host     string `yaml:"host"`
+	Port     int    `yaml:"port"`
+	AuthToken string `yaml:"auth_token"`
+	PathPrefix string `yaml:"path_prefix"`
+}
+
+// PBXConfig holds PBX connection settings
+type PBXConfig struct {
+	Type      string `yaml:"type"`
+	ARIURL    string `yaml:"ari_url"`
+	ARIWSUrl  string `yaml:"ari_ws_url"`
+	ARIUser   string `yaml:"ari_user"`
+	ARIPass   string `yaml:"ari_pass"`
+	AppName   string `yaml:"app_name"`
+	APIURL    string `yaml:"api_url"`
+	APIKey    string `yaml:"api_key"`
+	TenantID  string `yaml:"tenant_id"`
+	AuthURL   string `yaml:"auth_url"`
+	Username  string `yaml:"username"`
+	Password  string `yaml:"password"`
+	WebhookSecret string `yaml:"webhook_secret"`
+}
+
+// TenantConfig holds per-tenant configuration
+type TenantConfig struct {
+	ID         string     `yaml:"id"`
+	Name       string     `yaml:"name"`
+	PMS        PMSConfig  `yaml:"pms"`
+	PBX        PBXConfig  `yaml:"pbx"`
+	RoomPrefix string     `yaml:"room_prefix"`
+	Timezone   string     `yaml:"timezone"`
+	Settings   map[string]interface{} `yaml:"settings"`
+}
+
 // DSN returns the PostgreSQL connection string
 func (d *DatabaseConfig) DSN() string {
 	return fmt.Sprintf(

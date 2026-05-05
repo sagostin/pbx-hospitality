@@ -36,10 +36,10 @@ import (
 
 	"github.com/sagostin/pbx-hospitality/internal/config"
 	"github.com/sagostin/pbx-hospitality/internal/pms"
-	// Import listener sub-packages to trigger their init() registrations.
-	// Each listener package registers itself with pms.ListenerRegistry on import.
-	_ "github.com/sagostin/pbx-hospitality/internal/pms/listener/fias"
-	_ "github.com/sagostin/pbx-hospitality/internal/pms/listener/mitel"
+	// Import listener package to trigger its init() registrations.
+	// The listener package registers both "fias" and "mitel" protocols
+	// with pms.ListenerRegistry on import.
+	_ "github.com/sagostin/pbx-hospitality/internal/pms/listener"
 )
 
 func main() {
