@@ -9,10 +9,29 @@ import (
 
 // Config holds the complete application configuration
 type Config struct {
-	Server   ServerConfig   `yaml:"server"`
-	Database DatabaseConfig `yaml:"database"`
-	Crypto   CryptoConfig   `yaml:"crypto"`
-	Logging  LoggingConfig  `yaml:"logging"`
+	Server         ServerConfig          `yaml:"server"`
+	Database       DatabaseConfig        `yaml:"database"`
+	Crypto         CryptoConfig          `yaml:"crypto"`
+	Logging        LoggingConfig         `yaml:"logging"`
+	SiteConnectors []SiteConnectorConfig `yaml:"site_connectors"`
+}
+
+// SiteConnectorConfig describes a standalone PMS listener to run.
+// The site-connector binary (cmd/site-connector) starts only the listeners
+// defined here — no DB, no HTTP API, no tenant logic.
+// Each entry registers a protocol listener (e.g. "fias", "mitel") via the
+// pms.ListenerRegistry, so the protocol must be one that has called
+// pms.RegisterListener in its init() function.
+type SiteConnectorConfig struct {
+	// Protocol identifies the listener implementation (e.g. "fias", "mitel").
+	Protocol string `yaml:"protocol"`
+	// ListenHost is the address to bind (empty = all interfaces).
+	ListenHost string `yaml:"listen_host"`
+	// ListenPort is the TCP port to listen on.
+	ListenPort int `yaml:"listen_port"`
+	// AllowedPMSIPs is an optional IP allowlist; if non-empty, only
+	// connections from these IPs will be accepted.
+	AllowedPMSIPs []string `yaml:"allowed_pms_ips,omitempty"`
 }
 
 // ServerConfig holds HTTP server settings
