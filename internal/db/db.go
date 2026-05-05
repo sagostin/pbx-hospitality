@@ -6,6 +6,7 @@ import (
 	"time"
 
 	"github.com/rs/zerolog/log"
+	"github.com/sagostin/pbx-hospitality/internal/crypto"
 	"gorm.io/driver/postgres"
 	"gorm.io/gorm"
 	"gorm.io/gorm/logger"
@@ -147,10 +148,49 @@ func (PMSEvent) TableName() string {
 	return "pms_events"
 }
 
+type BicomSystem struct {
+	ID          string    `gorm:"primaryKey;size:64"`
+	Name        string    `gorm:"size:255;not null"`
+	APIURL      string    `gorm:"column:api_url;size:512;not null"`
+	APIKey      string    `gorm:"column:api_key;size:128;not null"`
+	TenantID    string    `gorm:"column:tenant_id;size:64"`
+	ARIURL      string    `gorm:"column:ari_url;size:512"`
+	ARIUser     string    `gorm:"column:ari_user;size:64"`
+	ARIPass     string    `gorm:"column:ari_pass;size:128"`
+	ARIAppName  string    `gorm:"column:ari_app_name;size:64"`
+	WebhookURL  string    `gorm:"column:webhook_url;size:512"`
+	HealthStatus string   `gorm:"column:health_status;size:32;default:'unknown'"`
+	LastHealthCheck time.Time `gorm:"column:last_health_check"`
+	Settings    string    `gorm:"type:jsonb;default:'{}'"`
+	Enabled     bool      `gorm:"default:true"`
+	CreatedAt   time.Time
+	UpdatedAt   time.Time
+}
+
+func (BicomSystem) TableName() string {
+	return "bicom_systems"
+}
+
+type SiteBicomMapping struct {
+	ID              uint      `gorm:"primaryKey;autoIncrement"`
+	SiteID          string    `gorm:"column:site_id;size:64;not null;index"`
+	BicomSystemID   string    `gorm:"column:bicom_system_id;size:64;not null;index"`
+	Priority        int       `gorm:"default:1"`
+	FailoverEnabled bool      `gorm:"column:failover_enabled;default:true"`
+	CreatedAt       time.Time
+	UpdatedAt       time.Time
+}
+
+func (SiteBicomMapping) TableName() string {
+	return "site_bicom_mappings"
+}
+
 func AutoMigrate(db *DB) error {
 	return db.DB.AutoMigrate(
 		&Site{},
 		&Tenant{},
+		&BicomSystem{},
+		&SiteBicomMapping{},
 		&RoomMapping{},
 		&GuestSession{},
 		&PMSEvent{},
@@ -211,7 +251,10 @@ func (db *DB) ValidateSiteAuthCode(ctx context.Context, siteID, authCode string)
 		}
 		return false, fmt.Errorf("querying site auth: %w", err)
 	}
-	return s.AuthCode == authCode, nil
+	if s.AuthCode == "" {
+		return false, nil
+	}
+	return crypto.VerifyAuthCode(authCode, s.AuthCode), nil
 }
 
 func (db *DB) ListTenantsBySite(ctx context.Context, siteID string) ([]Tenant, error) {
@@ -365,4 +408,135 @@ func (db *DB) GetRecentEvents(ctx context.Context, tenantID string, limit int) (
 		return nil, fmt.Errorf("querying PMS events: %w", err)
 	}
 	return events, nil
+}
+
+func (db *DB) ListBicomSystems(ctx context.Context) ([]BicomSystem, error) {
+	var systems []BicomSystem
+	if err := db.DB.WithContext(ctx).Order("name").Find(&systems).Error; err != nil {
+		return nil, fmt.Errorf("querying bicom systems: %w", err)
+	}
+	return systems, nil
+}
+
+func (db *DB) GetBicomSystem(ctx context.Context, id string) (*BicomSystem, error) {
+	var s BicomSystem
+	if err := db.DB.WithContext(ctx).First(&s, "id = ?", id).Error; err != nil {
+		if err == gorm.ErrRecordNotFound {
+			return nil, nil
+		}
+		return nil, fmt.Errorf("querying bicom system: %w", err)
+	}
+	return &s, nil
+}
+
+func (db *DB) CreateBicomSystem(ctx context.Context, s *BicomSystem) error {
+	if err := db.DB.WithContext(ctx).Create(s).Error; err != nil {
+		return fmt.Errorf("creating bicom system: %w", err)
+	}
+	return nil
+}
+
+func (db *DB) UpdateBicomSystem(ctx context.Context, s *BicomSystem) error {
+	if err := db.DB.WithContext(ctx).Model(s).Updates(map[string]interface{}{
+		"name":           s.Name,
+		"api_url":        s.APIURL,
+		"api_key":        s.APIKey,
+		"tenant_id":      s.TenantID,
+		"ari_url":        s.ARIURL,
+		"ari_user":       s.ARIUser,
+		"ari_pass":       s.ARIPass,
+		"ari_app_name":   s.ARIAppName,
+		"webhook_url":    s.WebhookURL,
+		"health_status":  s.HealthStatus,
+		"settings":       s.Settings,
+		"enabled":        s.Enabled,
+		"updated_at":     time.Now(),
+	}).Error; err != nil {
+		return fmt.Errorf("updating bicom system: %w", err)
+	}
+	return nil
+}
+
+func (db *DB) DeleteBicomSystem(ctx context.Context, id string) error {
+	if err := db.DB.WithContext(ctx).Delete(&BicomSystem{}, "id = ?", id).Error; err != nil {
+		return fmt.Errorf("deleting bicom system: %w", err)
+	}
+	return nil
+}
+
+func (db *DB) ListSiteBicomMappings(ctx context.Context, siteID string) ([]SiteBicomMapping, error) {
+	var mappings []SiteBicomMapping
+	if err := db.DB.WithContext(ctx).Where("site_id = ?", siteID).Order("priority").Find(&mappings).Error; err != nil {
+		return nil, fmt.Errorf("querying site-bicom mappings: %w", err)
+	}
+	return mappings, nil
+}
+
+func (db *DB) GetBicomSystemsForSite(ctx context.Context, siteID string) ([]BicomSystem, error) {
+	var systems []BicomSystem
+	if err := db.DB.WithContext(ctx).
+		Joins("JOIN site_bicom_mappings ON site_bicom_mappings.bicom_system_id = bicom_systems.id").
+		Where("site_bicom_mappings.site_id = ?", siteID).
+		Order("site_bicom_mappings.priority").
+		Find(&systems).Error; err != nil {
+		return nil, fmt.Errorf("querying bicom systems for site: %w", err)
+	}
+	return systems, nil
+}
+
+func (db *DB) CreateSiteBicomMapping(ctx context.Context, m *SiteBicomMapping) error {
+	if err := db.DB.WithContext(ctx).Create(m).Error; err != nil {
+		return fmt.Errorf("creating site-bicom mapping: %w", err)
+	}
+	return nil
+}
+
+func (db *DB) DeleteSiteBicomMapping(ctx context.Context, siteID, bicomSystemID string) error {
+	if err := db.DB.WithContext(ctx).Delete(&SiteBicomMapping{}, "site_id = ? AND bicom_system_id = ?", siteID, bicomSystemID).Error; err != nil {
+		return fmt.Errorf("deleting site-bicom mapping: %w", err)
+	}
+	return nil
+}
+
+func (db *DB) UpdateSiteBicomMappingHealth(ctx context.Context, bicomSystemID, status string) error {
+	return db.DB.WithContext(ctx).Exec(`
+		UPDATE bicom_systems
+		SET health_status = ?, last_health_check = ?
+		WHERE id = ?
+	`, status, time.Now(), bicomSystemID).Error
+}
+
+func (db *DB) GetSiteHealthStatus(ctx context.Context, siteID string) (string, error) {
+	mappings, err := db.ListSiteBicomMappings(ctx, siteID)
+	if err != nil {
+		return "unknown", err
+	}
+	if len(mappings) == 0 {
+		return "no_systems", nil
+	}
+
+	allHealthy := true
+	anyUnhealthy := false
+	for _, m := range mappings {
+		system, err := db.GetBicomSystem(ctx, m.BicomSystemID)
+		if err != nil || system == nil {
+			continue
+		}
+		switch system.HealthStatus {
+		case "healthy":
+		case "degraded":
+			allHealthy = false
+		default:
+			anyUnhealthy = true
+			allHealthy = false
+		}
+	}
+
+	if allHealthy {
+		return "healthy", nil
+	}
+	if anyUnhealthy {
+		return "unhealthy", nil
+	}
+	return "degraded", nil
 }
