@@ -7,6 +7,7 @@ import (
 	"github.com/gofiber/fiber/v2"
 	"github.com/rs/zerolog/log"
 
+	"github.com/sagostin/pbx-hospitality/internal/crypto"
 	"github.com/sagostin/pbx-hospitality/internal/db"
 )
 
@@ -116,6 +117,12 @@ func (s *AdminServer) createSite(c *fiber.Ctx) error {
 		return writeError(c, "auth_code must be at least 16 characters", "VALIDATION_ERROR", fiber.StatusBadRequest)
 	}
 
+	hashedCode, err := crypto.HashAuthCode(req.AuthCode)
+	if err != nil {
+		log.Error().Err(err).Msg("Failed to hash auth code")
+		return writeError(c, "failed to process auth code", "INTERNAL_ERROR", fiber.StatusInternalServerError)
+	}
+
 	existing, err := s.db.GetSite(c.Context(), req.ID)
 	if err != nil {
 		log.Error().Err(err).Str("site", req.ID).Msg("Failed to check existing site")
@@ -128,7 +135,7 @@ func (s *AdminServer) createSite(c *fiber.Ctx) error {
 	site := &db.Site{
 		ID:       req.ID,
 		Name:     req.Name,
-		AuthCode: req.AuthCode, // In production, this should be hashed
+		AuthCode: hashedCode,
 		Settings: siteMapToJSON(req.Settings),
 		Enabled:  req.Enabled,
 	}
@@ -179,7 +186,12 @@ func (s *AdminServer) updateSite(c *fiber.Ctx) error {
 		if len(*req.AuthCode) < 16 {
 			return writeError(c, "auth_code must be at least 16 characters", "VALIDATION_ERROR", fiber.StatusBadRequest)
 		}
-		existing.AuthCode = *req.AuthCode // In production, hash this
+		hashedCode, err := crypto.HashAuthCode(*req.AuthCode)
+		if err != nil {
+			log.Error().Err(err).Msg("Failed to hash auth code")
+			return writeError(c, "failed to process auth code", "INTERNAL_ERROR", fiber.StatusInternalServerError)
+		}
+		existing.AuthCode = hashedCode
 	}
 	if req.Settings != nil {
 		existing.Settings = siteMapToJSON(req.Settings)

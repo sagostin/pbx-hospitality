@@ -68,6 +68,18 @@ func NewRouterWithDB(tm *tenant.Manager, cfg *config.Config, database *db.DB) ht
 	adminSitesGroup.Post("/", admin.createSite)
 	adminSitesGroup.Put("/:id", admin.updateSite)
 	adminSitesGroup.Delete("/:id", admin.deleteSite)
+	adminSitesGroup.Get("/:id/bicom", admin.listSiteBicomMappings)
+	adminSitesGroup.Post("/:id/bicom", admin.addSiteBicomMapping)
+	adminSitesGroup.Delete("/:id/bicom/:bicomSystemId", admin.removeSiteBicomMapping)
+	adminSitesGroup.Get("/:id/health", admin.getSiteHealth)
+
+	adminBicomGroup := app.Group("/admin/bicom-systems")
+	adminBicomGroup.Use(adminKeyMiddleware(cfg.Server.AdminAPIKey))
+	adminBicomGroup.Get("/", admin.listBicomSystems)
+	adminBicomGroup.Get("/:id", admin.getBicomSystem)
+	adminBicomGroup.Post("/", admin.createBicomSystem)
+	adminBicomGroup.Put("/:id", admin.updateBicomSystem)
+	adminBicomGroup.Delete("/:id", admin.deleteBicomSystem)
 
 	apiV1 := app.Group("/api/v1")
 	tenants := apiV1.Group("/tenants")
