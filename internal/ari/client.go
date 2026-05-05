@@ -11,6 +11,24 @@ import (
 	"github.com/rs/zerolog/log"
 )
 
+// EventType represents the type of ARI event
+type EventType string
+
+const (
+	EventTypeStasisStart        EventType = "StasisStart"
+	EventTypeStasisEnd          EventType = "StasisEnd"
+	EventTypeChannelStateChange  EventType = "ChannelStateChange"
+	EventTypeChannelCreated      EventType = "ChannelCreated"
+	EventTypeChannelDestroyed    EventType = "ChannelDestroyed"
+	EventTypePlaybackStarted     EventType = "PlaybackStarted"
+	EventTypePlaybackFinished    EventType = "PlaybackFinished"
+	EventTypeDial               EventType = "Dial"
+	EventTypeBridgeCreated       EventType = "BridgeCreated"
+	EventTypeBridgeDestroyed    EventType = "BridgeDestroyed"
+	EventTypeEndpointStateChange EventType = "EndpointStateChange"
+	EventTypeUnknown            EventType = "Unknown"
+)
+
 // Config holds ARI client configuration
 type Config struct {
 	URL      string
@@ -20,13 +38,54 @@ type Config struct {
 	AppName  string
 }
 
-// Client wraps the CyCoreSystems ARI client with reconnection logic
+// ARIEvent represents a captured ARI event for debugging/analysis
+type ARIEvent struct {
+	Type      EventType
+	Timestamp time.Time
+	ChannelID string
+	Exten     string
+	CallerID  string
+	CallerName string
+	Dialplan  string
+	State     string
+	Metadata  map[string]string
+}
+
+// EventObserver is a callback interface for receiving ARI events
+type EventObserver interface {
+	OnARIEvent(event ARIEvent)
+}
+
+// EventFilter controls which events are captured
+type EventFilter struct {
+	IncludeStasisStart        bool
+	IncludeStasisEnd          bool
+	IncludeChannelStateChange bool
+	IncludeDial              bool
+	IncludeAll               bool
+}
+
+// DefaultEventFilter returns a filter that captures all events
+func DefaultEventFilter() EventFilter {
+	return EventFilter{
+		IncludeAll: true,
+	}
+}
+
+// Client wraps the CyCoreSystems ARI client with reconnection logic and event debugging
 type Client struct {
 	cfg       Config
 	client    arilib.Client
 	mu        sync.RWMutex
 	connected bool
 	cancel    context.CancelFunc
+
+	// Event debugging
+	observers []EventObserver
+	filter    EventFilter
+	events    []ARIEvent       // Circular buffer of recent events
+	eventsMu  sync.RWMutex
+	eventSub  arilib.Subscription
 }
 
 // NewClient creates a new ARI client wrapper
@@ -220,4 +279,264 @@ func (c *Client) Originate(ctx context.Context, from, to string, timeout time.Du
 	}
 
 	return handle, nil
+}
+
+// AddObserver registers an observer for ARI events
+func (c *Client) AddObserver(observer EventObserver) {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	c.observers = append(c.observers, observer)
+}
+
+// RemoveObserver unregisters an observer
+func (c *Client) RemoveObserver(observer EventObserver) {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	for i, obs := range c.observers {
+		if obs == observer {
+			c.observers = append(c.observers[:i], c.observers[i+1:]...)
+			return
+		}
+	}
+}
+
+// SetFilter configures which events are captured
+func (c *Client) SetFilter(filter EventFilter) {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	c.filter = filter
+}
+
+// GetRecentEvents returns the most recent events (up to maxEvents)
+func (c *Client) GetRecentEvents(maxEvents int) []ARIEvent {
+	c.eventsMu.RLock()
+	defer c.eventsMu.RUnlock()
+	if maxEvents > len(c.events) {
+		maxEvents = len(c.events)
+	}
+	result := make([]ARIEvent, maxEvents)
+	copy(result, c.events[len(c.events)-maxEvents:])
+	return result
+}
+
+// EnableDebugging turns on verbose ARI event logging for development
+func (c *Client) EnableDebugging() {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	c.filter.IncludeAll = true
+	c.filter.IncludeStasisStart = true
+	c.filter.IncludeStasisEnd = true
+	c.filter.IncludeChannelStateChange = true
+	c.filter.IncludeDial = true
+	log.Info().Msg("ARI debugging enabled")
+}
+
+// DisableDebugging turns off verbose ARI event logging
+func (c *Client) DisableDebugging() {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	c.filter = EventFilter{}
+	log.Info().Msg("ARI debugging disabled")
+}
+
+// SubscribeToEvents starts capturing ARI events for debugging
+func (c *Client) SubscribeToEvents() error {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+
+	if c.client == nil {
+		return fmt.Errorf("not connected to ARI")
+	}
+
+	if c.eventSub != nil {
+		return nil // Already subscribed
+	}
+
+	// Subscribe to all ARI events
+	c.eventSub = c.client.Bridge().Subscribe(nil, "StasisStart", "StasisEnd",
+		"ChannelStateChange", "ChannelCreated", "ChannelDestroyed",
+		"Dial", "BridgeCreated", "BridgeDestroyed", "EndpointStateChange")
+
+	if c.eventSub == nil {
+		return fmt.Errorf("failed to subscribe to ARI events")
+	}
+
+	// Process events in background
+	go c.processEvents()
+
+	log.Info().Msg("Subscribed to ARI events for debugging")
+	return nil
+}
+
+// processEvents handles incoming ARI events
+func (c *Client) processEvents() {
+	if c.eventSub == nil {
+		return
+	}
+
+	for v := range c.eventSub.Events() {
+		if v == nil {
+			continue
+		}
+		c.handleARIEvent(v)
+	}
+}
+
+// handleARIEvent converts ARI events to ARIEvent and captures them
+func (c *Client) handleARIEvent(v interface{}) {
+	switch event := v.(type) {
+	case *arilib.StasisStart:
+		c.captureEvent(ARIEvent{
+			Type:       EventTypeStasisStart,
+			Timestamp:  time.Now(),
+			ChannelID:  event.Channel.ID,
+			Exten:      extractDialedNumber(event.Channel),
+			CallerID:   extractCallerNumber(event.Channel),
+			CallerName: extractCallerName(event.Channel),
+			State:      string(event.Channel.State),
+			Metadata:   extractChannelMetadata(event.Channel),
+		})
+	case *arilib.StasisEnd:
+		c.captureEvent(ARIEvent{
+			Type:       EventTypeStasisEnd,
+			Timestamp:  time.Now(),
+			ChannelID:  event.Channel.ID,
+			CallerID:   extractCallerNumber(event.Channel),
+			State:      string(event.Channel.State),
+			Metadata:   extractChannelMetadata(event.Channel),
+		})
+	case *arilib.ChannelStateChange:
+		c.captureEvent(ARIEvent{
+			Type:       EventTypeChannelStateChange,
+			Timestamp:  time.Now(),
+			ChannelID:  event.Channel.ID,
+			Exten:      extractDialedNumber(event.Channel),
+			CallerID:   extractCallerNumber(event.Channel),
+			State:      string(event.Channel.State),
+			Metadata:   extractChannelMetadata(event.Channel),
+		})
+	case *arilib.Dial:
+		// Dial events contain caller and peer channel data
+		c.captureEvent(ARIEvent{
+			Type:       EventTypeDial,
+			Timestamp:  time.Now(),
+			ChannelID:  event.Caller.ID,
+			Exten:      event.Dialstring,
+			CallerName: event.Caller.Name,
+			State:      event.Dialstatus,
+			Metadata: map[string]string{
+				"dialstring": event.Dialstring,
+				"forward":    event.Forward,
+				"peer_name":  event.Peer.Name,
+				"peer_id":    event.Peer.ID,
+				"dialstatus": event.Dialstatus,
+			},
+		})
+	default:
+		c.captureEvent(ARIEvent{
+			Type:       EventTypeUnknown,
+			Timestamp:  time.Now(),
+			Metadata:   map[string]string{"raw_type": fmt.Sprintf("%T", v)},
+		})
+	}
+}
+
+// extractDialedNumber extracts the dialed number from a channel
+func extractDialedNumber(channel arilib.ChannelData) string {
+	if channel.Dialplan != nil && channel.Dialplan.Exten != "" {
+		return channel.Dialplan.Exten
+	}
+	if channel.Connected != nil && channel.Connected.Number != "" {
+		return channel.Connected.Number
+	}
+	return channel.ID
+}
+
+// extractCallerNumber extracts the caller ID number from a channel
+func extractCallerNumber(channel arilib.ChannelData) string {
+	if channel.Caller != nil {
+		return channel.Caller.Number
+	}
+	return ""
+}
+
+// extractCallerName extracts the caller ID name from a channel
+func extractCallerName(channel arilib.ChannelData) string {
+	if channel.Caller != nil {
+		return channel.Caller.Name
+	}
+	return ""
+}
+
+// extractChannelMetadata extracts additional channel info as metadata
+func extractChannelMetadata(channel arilib.ChannelData) map[string]string {
+	meta := make(map[string]string)
+	if channel.Connected != nil {
+		meta["connected_name"] = channel.Connected.Name
+		meta["connected_number"] = channel.Connected.Number
+	}
+	if channel.Dialplan != nil {
+		meta["dialplan_context"] = channel.Dialplan.Context
+		meta["dialplan_exten"] = channel.Dialplan.Exten
+		meta["dialplan_priority"] = fmt.Sprintf("%v", channel.Dialplan.Priority)
+	}
+	meta["channel_state"] = string(channel.State)
+	return meta
+}
+
+// notifyObservers sends an event to all registered observers
+func (c *Client) notifyObservers(event ARIEvent) {
+	c.mu.RLock()
+	observers := c.observers
+	c.mu.RUnlock()
+
+	for _, obs := range observers {
+		obs.OnARIEvent(event)
+	}
+}
+
+// shouldCaptureEvent checks if an event should be captured based on the filter
+func (c *Client) shouldCaptureEvent(eventType EventType) bool {
+	c.mu.RLock()
+	defer c.mu.RUnlock()
+
+	if c.filter.IncludeAll {
+		return true
+	}
+	switch eventType {
+	case EventTypeStasisStart:
+		return c.filter.IncludeStasisStart
+	case EventTypeStasisEnd:
+		return c.filter.IncludeStasisEnd
+	case EventTypeChannelStateChange:
+		return c.filter.IncludeChannelStateChange
+	case EventTypeDial:
+		return c.filter.IncludeDial
+	default:
+		return false
+	}
+}
+
+// captureEvent records an event and notifies observers
+func (c *Client) captureEvent(event ARIEvent) {
+	if !c.shouldCaptureEvent(event.Type) {
+		return
+	}
+
+	c.eventsMu.Lock()
+	c.events = append(c.events, event)
+	// Keep only last 1000 events
+	if len(c.events) > 1000 {
+		c.events = c.events[len(c.events)-1000:]
+	}
+	c.eventsMu.Unlock()
+
+	c.notifyObservers(event)
+
+	log.Debug().
+		Str("type", string(event.Type)).
+		Str("channel_id", event.ChannelID).
+		Str("extension", event.Exten).
+		Str("caller_id", event.CallerID).
+		Msg("ARI event captured")
 }

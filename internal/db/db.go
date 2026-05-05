@@ -74,12 +74,138 @@ func (db *DB) Pool() *pgxpool.Pool {
 }
 
 // =============================================================================
+// Site Repository
+// =============================================================================
+
+// Site represents a physical location/grouping of tenants
+type Site struct {
+	ID        string
+	Name      string
+	AuthCode  string // Hashed auth code for site connector authentication
+	Settings  map[string]interface{}
+	Enabled   bool
+	CreatedAt time.Time
+	UpdatedAt time.Time
+}
+
+// GetSite retrieves a site by ID
+func (db *DB) GetSite(ctx context.Context, id string) (*Site, error) {
+	var s Site
+	err := db.pool.QueryRow(ctx, `
+		SELECT id, name, auth_code, settings, enabled, created_at, updated_at
+		FROM sites WHERE id = $1
+	`, id).Scan(&s.ID, &s.Name, &s.AuthCode, &s.Settings, &s.Enabled, &s.CreatedAt, &s.UpdatedAt)
+
+	if err == pgx.ErrNoRows {
+		return nil, nil
+	}
+	if err != nil {
+		return nil, fmt.Errorf("querying site: %w", err)
+	}
+	return &s, nil
+}
+
+// ListSites returns all sites
+func (db *DB) ListSites(ctx context.Context) ([]Site, error) {
+	rows, err := db.pool.Query(ctx, `
+		SELECT id, name, auth_code, settings, enabled, created_at, updated_at
+		FROM sites ORDER BY name
+	`)
+	if err != nil {
+		return nil, fmt.Errorf("querying sites: %w", err)
+	}
+	defer rows.Close()
+
+	var sites []Site
+	for rows.Next() {
+		var s Site
+		if err := rows.Scan(&s.ID, &s.Name, &s.AuthCode, &s.Settings, &s.Enabled, &s.CreatedAt, &s.UpdatedAt); err != nil {
+			return nil, fmt.Errorf("scanning site: %w", err)
+		}
+		sites = append(sites, s)
+	}
+	return sites, nil
+}
+
+// CreateSite creates a new site
+func (db *DB) CreateSite(ctx context.Context, s *Site) error {
+	_, err := db.pool.Exec(ctx, `
+		INSERT INTO sites (id, name, auth_code, settings, enabled)
+		VALUES ($1, $2, $3, $4, $5)
+	`, s.ID, s.Name, s.AuthCode, s.Settings, s.Enabled)
+	if err != nil {
+		return fmt.Errorf("creating site: %w", err)
+	}
+	return nil
+}
+
+// UpdateSite updates an existing site
+func (db *DB) UpdateSite(ctx context.Context, s *Site) error {
+	_, err := db.pool.Exec(ctx, `
+		UPDATE sites
+		SET name = $2, auth_code = $3, settings = $4, enabled = $5, updated_at = NOW()
+		WHERE id = $1
+	`, s.ID, s.Name, s.AuthCode, s.Settings, s.Enabled)
+	if err != nil {
+		return fmt.Errorf("updating site: %w", err)
+	}
+	return nil
+}
+
+// DeleteSite deletes a site by ID (tenants become orphaned, site_id set to NULL)
+func (db *DB) DeleteSite(ctx context.Context, id string) error {
+	_, err := db.pool.Exec(ctx, `DELETE FROM sites WHERE id = $1`, id)
+	if err != nil {
+		return fmt.Errorf("deleting site: %w", err)
+	}
+	return nil
+}
+
+// ValidateSiteAuthCode checks if the provided auth code matches the site's auth code
+func (db *DB) ValidateSiteAuthCode(ctx context.Context, siteID, authCode string) (bool, error) {
+	var storedCode string
+	err := db.pool.QueryRow(ctx, `
+		SELECT auth_code FROM sites WHERE id = $1 AND enabled = TRUE
+	`, siteID).Scan(&storedCode)
+	if err == pgx.ErrNoRows {
+		return false, nil
+	}
+	if err != nil {
+		return false, fmt.Errorf("querying site auth: %w", err)
+	}
+	return storedCode == authCode, nil
+}
+
+// ListTenantsBySite returns all tenants belonging to a site
+func (db *DB) ListTenantsBySite(ctx context.Context, siteID string) ([]Tenant, error) {
+	rows, err := db.pool.Query(ctx, `
+		SELECT id, site_id, name, pms_config, pbx_config, settings, enabled, created_at, updated_at
+		FROM tenants WHERE site_id = $1 ORDER BY name
+	`, siteID)
+	if err != nil {
+		return nil, fmt.Errorf("querying tenants by site: %w", err)
+	}
+	defer rows.Close()
+
+	var tenants []Tenant
+	for rows.Next() {
+		var t Tenant
+		if err := rows.Scan(&t.ID, &t.SiteID, &t.Name, &t.PMSConfig, &t.PBXConfig, &t.Settings, &t.Enabled, &t.CreatedAt, &t.UpdatedAt); err != nil {
+			return nil, fmt.Errorf("scanning tenant: %w", err)
+		}
+		tenants = append(tenants, t)
+	}
+	return tenants, nil
+}
+
+// =============================================================================
 // Tenant Repository
 // =============================================================================
 
 // Tenant represents a row in the tenants table
 type Tenant struct {
 	ID        string
+	SiteID    *string // Pointer to allow NULL when no site assigned
 	Name      string
 	PMSConfig map[string]interface{}
 	PBXConfig map[string]interface{}
@@ -93,9 +219,9 @@ type Tenant struct {
 func (db *DB) GetTenant(ctx context.Context, id string) (*Tenant, error) {
 	var t Tenant
 	err := db.pool.QueryRow(ctx, `
-		SELECT id, name, pms_config, pbx_config, settings, enabled, created_at, updated_at
+		SELECT id, site_id, name, pms_config, pbx_config, settings, enabled, created_at, updated_at
 		FROM tenants WHERE id = $1
-	`, id).Scan(&t.ID, &t.Name, &t.PMSConfig, &t.PBXConfig, &t.Settings, &t.Enabled, &t.CreatedAt, &t.UpdatedAt)
+	`, id).Scan(&t.ID, &t.SiteID, &t.Name, &t.PMSConfig, &t.PBXConfig, &t.Settings, &t.Enabled, &t.CreatedAt, &t.UpdatedAt)
 
 	if err == pgx.ErrNoRows {
 		return nil, nil
@@ -109,7 +235,7 @@ func (db *DB) GetTenant(ctx context.Context, id string) (*Tenant, error) {
 // ListTenants returns all tenants
 func (db *DB) ListTenants(ctx context.Context) ([]Tenant, error) {
 	rows, err := db.pool.Query(ctx, `
-		SELECT id, name, pms_config, pbx_config, settings, enabled, created_at, updated_at
+		SELECT id, site_id, name, pms_config, pbx_config, settings, enabled, created_at, updated_at
 		FROM tenants ORDER BY name
 	`)
 	if err != nil {
@@ -120,7 +246,7 @@ func (db *DB) ListTenants(ctx context.Context) ([]Tenant, error) {
 	var tenants []Tenant
 	for rows.Next() {
 		var t Tenant
-		if err := rows.Scan(&t.ID, &t.Name, &t.PMSConfig, &t.PBXConfig, &t.Settings, &t.Enabled, &t.CreatedAt, &t.UpdatedAt); err != nil {
+		if err := rows.Scan(&t.ID, &t.SiteID, &t.Name, &t.PMSConfig, &t.PBXConfig, &t.Settings, &t.Enabled, &t.CreatedAt, &t.UpdatedAt); err != nil {
 			return nil, fmt.Errorf("scanning tenant: %w", err)
 		}
 		tenants = append(tenants, t)
@@ -131,9 +257,9 @@ func (db *DB) ListTenants(ctx context.Context) ([]Tenant, error) {
 // CreateTenant creates a new tenant
 func (db *DB) CreateTenant(ctx context.Context, t *Tenant) error {
 	_, err := db.pool.Exec(ctx, `
-		INSERT INTO tenants (id, name, pms_config, pbx_config, settings, enabled)
-		VALUES ($1, $2, $3, $4, $5, $6)
-	`, t.ID, t.Name, t.PMSConfig, t.PBXConfig, t.Settings, t.Enabled)
+		INSERT INTO tenants (id, site_id, name, pms_config, pbx_config, settings, enabled)
+		VALUES ($1, $2, $3, $4, $5, $6, $7)
+	`, t.ID, t.SiteID, t.Name, t.PMSConfig, t.PBXConfig, t.Settings, t.Enabled)
 	if err != nil {
 		return fmt.Errorf("creating tenant: %w", err)
 	}
@@ -144,9 +270,9 @@ func (db *DB) CreateTenant(ctx context.Context, t *Tenant) error {
 func (db *DB) UpdateTenant(ctx context.Context, t *Tenant) error {
 	_, err := db.pool.Exec(ctx, `
 		UPDATE tenants
-		SET name = $2, pms_config = $3, pbx_config = $4, settings = $5, enabled = $6, updated_at = NOW()
+		SET site_id = $2, name = $3, pms_config = $4, pbx_config = $5, settings = $6, enabled = $7, updated_at = NOW()
 		WHERE id = $1
-	`, t.ID, t.Name, t.PMSConfig, t.PBXConfig, t.Settings, t.Enabled)
+	`, t.ID, t.SiteID, t.Name, t.PMSConfig, t.PBXConfig, t.Settings, t.Enabled)
 	if err != nil {
 		return fmt.Errorf("updating tenant: %w", err)
 	}

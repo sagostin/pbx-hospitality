@@ -79,13 +79,70 @@ func (m *Manager) LoadFromDB(ctx context.Context) error {
 
 // dbTenantToConfig converts a database tenant row to a TenantConfig
 func (m *Manager) dbTenantToConfig(t db.Tenant) config.TenantConfig {
-	return config.TenantConfig{
+	tc := config.TenantConfig{
 		ID:     t.ID,
 		Name:   t.Name,
+		SiteID: pointerString(t.SiteID),
 		PMS:    pmsConfigFromMap(t.PMSConfig),
 		PBX:    pbxConfigFromMap(t.PBXConfig),
-		Settings: t.Settings,
 	}
+	// Convert generic map to TenantSettings if possible
+	if settingsMap, ok := t.Settings["features"].(map[string]interface{}); ok {
+		if wakeUp, ok := settingsMap["wake_up_calls"].(bool); ok {
+			tc.Settings.Features.WakeUpCalls = wakeUp
+		}
+		if roomClean, ok := settingsMap["room_clean_code"].(bool); ok {
+			tc.Settings.Features.RoomCleanCode = roomClean
+		}
+		if dnd, ok := settingsMap["dnd"].(bool); ok {
+			tc.Settings.Features.DND = dnd
+		}
+		if mwi, ok := settingsMap["mwi"].(bool); ok {
+			tc.Settings.Features.MWI = mwi
+		}
+		if voicemail, ok := settingsMap["voicemail"].(bool); ok {
+			tc.Settings.Features.Voicemail = voicemail
+		}
+		if callForward, ok := settingsMap["call_forward"].(bool); ok {
+			tc.Settings.Features.CallForward = callForward
+		}
+	}
+	if accessCodes, ok := t.Settings["access_codes"].(map[string]interface{}); ok {
+		if code, ok := accessCodes["wake_up"].(string); ok {
+			tc.Settings.AccessCodes.WakeUp = code
+		}
+		if code, ok := accessCodes["room_clean"].(string); ok {
+			tc.Settings.AccessCodes.RoomClean = code
+		}
+		if code, ok := accessCodes["room_service"].(string); ok {
+			tc.Settings.AccessCodes.RoomService = code
+		}
+		if code, ok := accessCodes["do_not_disturb"].(string); ok {
+			tc.Settings.AccessCodes.DoNotDisturb = code
+		}
+		if code, ok := accessCodes["voicemail"].(string); ok {
+			tc.Settings.AccessCodes.Voicemail = code
+		}
+	}
+	if roomPrefix, ok := t.Settings["room_prefix"].(string); ok {
+		tc.Settings.RoomPrefix = roomPrefix
+	}
+	if extRange, ok := t.Settings["extension_range"].([]interface{}); ok && len(extRange) == 2 {
+		if min, ok := extRange[0].(float64); ok {
+			tc.Settings.ExtensionRange[0] = int(min)
+		}
+		if max, ok := extRange[1].(float64); ok {
+			tc.Settings.ExtensionRange[1] = int(max)
+		}
+	}
+	return tc
+}
+
+func pointerString(s *string) string {
+	if s == nil {
+		return ""
+	}
+	return *s
 }
 
 // pmsConfigFromMap converts a map to PMSConfig

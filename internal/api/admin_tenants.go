@@ -35,6 +35,7 @@ func writeError(c *fiber.Ctx, message, code string, status int) error {
 
 type tenantResponse struct {
 	ID        string                 `json:"id"`
+	SiteID    *string                `json:"site_id,omitempty"`
 	Name      string                 `json:"name"`
 	PMSConfig map[string]interface{} `json:"pms_config"`
 	PBXConfig map[string]interface{} `json:"pbx_config"`
@@ -46,6 +47,7 @@ type tenantResponse struct {
 
 type createTenantRequest struct {
 	ID        string                 `json:"id"`
+	SiteID    *string                `json:"site_id,omitempty"`
 	Name      string                 `json:"name"`
 	PMSConfig map[string]interface{} `json:"pms_config"`
 	PBXConfig map[string]interface{} `json:"pbx_config"`
@@ -54,6 +56,7 @@ type createTenantRequest struct {
 }
 
 type updateTenantRequest struct {
+	SiteID    *string                `json:"site_id,omitempty"`
 	Name      *string                `json:"name,omitempty"`
 	PMSConfig map[string]interface{} `json:"pms_config,omitempty"`
 	PBXConfig map[string]interface{} `json:"pbx_config,omitempty"`
@@ -153,6 +156,7 @@ func (s *AdminServer) createTenant(c *fiber.Ctx) error {
 
 	t := &db.Tenant{
 		ID:        req.ID,
+		SiteID:    req.SiteID,
 		Name:      req.Name,
 		PMSConfig: req.PMSConfig,
 		PBXConfig: req.PBXConfig,
@@ -205,6 +209,13 @@ func (s *AdminServer) updateTenant(c *fiber.Ctx) error {
 			return writeError(c, "name must be max 255 chars", "VALIDATION_ERROR", fiber.StatusBadRequest)
 		}
 		existing.Name = *req.Name
+	}
+	if req.SiteID != nil {
+		if *req.SiteID == "" {
+			existing.SiteID = nil // Clear site association
+		} else {
+			existing.SiteID = req.SiteID
+		}
 	}
 	if req.PMSConfig != nil {
 		if err := validatePMSConfig(req.PMSConfig); err != nil {
@@ -386,6 +397,7 @@ func (e *validationError) Error() string {
 func toTenantResponse(t db.Tenant) tenantResponse {
 	return tenantResponse{
 		ID:        t.ID,
+		SiteID:    t.SiteID,
 		Name:      t.Name,
 		PMSConfig: t.PMSConfig,
 		PBXConfig: t.PBXConfig,
