@@ -3,6 +3,7 @@
 > Multi-tenant Property Management System integration for hotel PBX systems
 
 [![Go Version](https://img.shields.io/badge/Go-1.24+-00ADD8?style=flat&logo=go)](https://go.dev/)
+[![License](https://img.shields.io/badge/License-MIT-green?style=flat)](LICENSE)
 
 ## Overview
 
@@ -48,7 +49,7 @@ This service connects hotel Property Management Systems (PMS) to PBX systems, en
 
 ```bash
 git clone https://github.com/sagostin/pbx-hospitality.git
-cd bicom-hospitality
+cd pbx-hospitality
 go mod download
 go build ./cmd/bicom-hospitality
 ```
@@ -150,14 +151,28 @@ go test ./... -v
 
 ## Documentation
 
-- [Architecture Guide](docs/architecture.md)
-- [**PBX Providers Guide**](docs/pbx-providers.md) - Bicom, Zultys, adding new providers
-- [API Reference](docs/api-reference.md)
-- [Deployment Guide](docs/deployment.md)
-- [Protocol Reference](docs/protocols.md)
-- [Bicom API Reference](docs/bicom-api.md)
-- [TigerTMS Integration](docs/tigertms.md)
-- [Future Considerations](docs/future-considerations.md)
+### Guides
+
+- [Architecture Guide](docs/architecture.md) - System design and components
+- [PBX Providers Guide](docs/pbx-providers.md) - Bicom, Zultys, adding new providers
+- [Deployment Guide](docs/deployment.md) - Production deployment best practices
+- [Protocol Reference](docs/protocols.md) - PMS protocol specifications
+
+### API & Reference
+
+- [API Reference](docs/api-reference.md) - REST API endpoints
+- [Bicom API Reference](docs/bicom-api.md) - Bicom PBXware API details
+- [TigerTMS Integration](docs/tigertms.md) - TigerTMS REST adapter
+
+### Resources
+
+- [PBXware API Postman Collection](docs/bicom/PBXwareAPI_Doc.postman_collection.json) - Interactive API tests
+- [PBXware Setup Automation Collection](docs/bicom/MT%20Setup%20Automation%20Collection%202.postman_collection.json) - Provisioning automation
+- [Future Considerations](docs/future-considerations.md) - Roadmap and ideas
+
+## Contributing
+
+Contributions are welcome. Please ensure tests pass (`go test ./...`) before submitting pull requests.
 
 ## License
 
