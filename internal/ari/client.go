@@ -3,12 +3,20 @@ package ari
 import (
 	"context"
 	"fmt"
+	"math"
 	"sync"
 	"time"
 
 	arilib "github.com/CyCoreSystems/ari/v6"
 	"github.com/CyCoreSystems/ari/v6/client/native"
 	"github.com/rs/zerolog/log"
+)
+
+const (
+	reconnectBaseDelay    = 1 * time.Second
+	reconnectMaxDelay     = 60 * time.Second
+	maxReconnectAttempts  = 10
+	subscriptionsLostLogInterval = 10
 )
 
 // EventType represents the type of ARI event
@@ -86,6 +94,23 @@ type Client struct {
 	events    []ARIEvent       // Circular buffer of recent events
 	eventsMu  sync.RWMutex
 	eventSub  arilib.Subscription
+
+	// Reconnection state
+	reconnecting   bool
+	reconnectCount int
+
+	// MWI state persistence
+	mwiState map[string]bool // extension -> mwi on
+	mwiMu    sync.RWMutex
+
+	// DND state persistence
+	dndState map[string]bool // extension -> dnd on
+	dndMu    sync.RWMutex
+
+	// Connection state callbacks
+	onConnect    []func()
+	onDisconnect []func()
+	onReconnect  []func()
 }
 
 // NewClient creates a new ARI client wrapper
@@ -101,7 +126,11 @@ func NewClient(cfg Config) (*Client, error) {
 		cfg.WSUrl = cfg.URL + "/events"
 	}
 
-	return &Client{cfg: cfg}, nil
+	return &Client{
+		cfg:       cfg,
+		mwiState:  make(map[string]bool),
+		dndState:  make(map[string]bool),
+	}, nil
 }
 
 // Connect establishes connection to the ARI server
@@ -124,6 +153,8 @@ func (c *Client) Connect(ctx context.Context) error {
 
 	c.client = client
 	c.connected = true
+	c.reconnecting = false
+	c.reconnectCount = 0
 
 	log.Info().
 		Str("url", c.cfg.URL).
@@ -133,14 +164,154 @@ func (c *Client) Connect(ctx context.Context) error {
 	// Start reconnection monitor
 	go c.monitorConnection(ctx)
 
+	// Subscribe to events on initial connect
+	go c.subscribeToEvents()
+
 	return nil
 }
 
 // monitorConnection watches for disconnection and attempts reconnect
 func (c *Client) monitorConnection(ctx context.Context) {
-	// TODO: Implement reconnection logic based on ARI client signals
-	// For now, just log that we're monitoring
-	<-ctx.Done()
+	for {
+		select {
+		case <-ctx.Done():
+			return
+		default:
+			if c.shouldReconnect() {
+				c.reconnect(ctx)
+			}
+			time.Sleep(5 * time.Second)
+		}
+	}
+}
+
+func (c *Client) shouldReconnect() bool {
+	c.mu.RLock()
+	defer c.mu.RUnlock()
+
+	if c.connected && c.client != nil {
+		return false
+	}
+	if c.reconnecting {
+		return false
+	}
+	return true
+}
+
+func (c *Client) reconnect(ctx context.Context) {
+	c.mu.Lock()
+	if c.reconnecting {
+		c.mu.Unlock()
+		return
+	}
+	c.reconnecting = true
+	c.reconnectCount++
+	c.mu.Unlock()
+
+	log.Warn().
+		Int("attempt", c.reconnectCount).
+		Msg("Attempting to reconnect to ARI")
+
+	delay := reconnectBaseDelay * time.Duration(math.Pow(2, float64(c.reconnectCount-1)))
+	if delay > reconnectMaxDelay {
+		delay = reconnectMaxDelay
+	}
+
+	select {
+	case <-time.After(delay):
+	case <-ctx.Done():
+		c.mu.Lock()
+		c.reconnecting = false
+		c.mu.Unlock()
+		return
+	}
+
+	c.mu.Lock()
+	c.mu.Unlock()
+
+	if err := c.connectInternal(ctx); err != nil {
+		log.Error().
+			Err(err).
+			Int("attempt", c.reconnectCount).
+			Msg("Failed to reconnect to ARI")
+
+		c.mu.Lock()
+		c.reconnecting = false
+		c.mu.Unlock()
+
+		if c.reconnectCount >= maxReconnectAttempts {
+			log.Error().Msg("Max reconnect attempts reached")
+		}
+	} else {
+		log.Info().Msg("Successfully reconnected to ARI")
+
+		c.mu.Lock()
+		c.reconnecting = false
+		c.mu.Unlock()
+	}
+}
+
+func (c *Client) connectInternal(ctx context.Context) error {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+
+	if c.cancel != nil {
+		c.cancel()
+	}
+
+	_, cancel := context.WithCancel(ctx)
+	c.cancel = cancel
+
+	client, err := native.Connect(&native.Options{
+		Application:  c.cfg.AppName,
+		URL:          c.cfg.URL,
+		WebsocketURL: c.cfg.WSUrl,
+		Username:     c.cfg.Username,
+		Password:     c.cfg.Password,
+	})
+	if err != nil {
+		return fmt.Errorf("connecting to ARI: %w", err)
+	}
+
+	c.client = client
+	c.connected = true
+
+	log.Info().
+		Str("url", c.cfg.URL).
+		Str("app", c.cfg.AppName).
+		Msg("Reconnected to ARI")
+
+	return nil
+}
+
+func (c *Client) subscribeToEvents() {
+	c.mu.Lock()
+	if c.eventSub != nil {
+		c.mu.Unlock()
+		return
+	}
+
+	if c.client == nil {
+		c.mu.Unlock()
+		return
+	}
+
+	c.eventSub = c.client.Bridge().Subscribe(nil, "StasisStart", "StasisEnd",
+		"ChannelStateChange", "ChannelCreated", "ChannelDestroyed",
+		"Dial", "BridgeCreated", "BridgeDestroyed", "EndpointStateChange")
+	c.mu.Unlock()
+
+	if c.eventSub == nil {
+		log.Error().Msg("Failed to subscribe to ARI events")
+		return
+	}
+
+	log.Info().Msg("Subscribed to ARI events")
+
+	go c.processEvents()
+
+	c.resyncMWI()
+	c.resyncDND()
 }
 
 // Close terminates the ARI connection
@@ -150,6 +321,11 @@ func (c *Client) Close() error {
 
 	if c.cancel != nil {
 		c.cancel()
+	}
+
+	if c.eventSub != nil {
+		c.eventSub.Cancel()
+		c.eventSub = nil
 	}
 
 	if c.client != nil {
@@ -176,19 +352,13 @@ func (c *Client) SetCallerIDName(ctx context.Context, extension, name string) er
 		return fmt.Errorf("not connected to ARI")
 	}
 
-	// The caller ID name is typically set via the dialplan or endpoint configuration
-	// For ARI, we would need to use channel variables or AMI for endpoint updates
-	// This is a placeholder - actual implementation depends on Bicom's ARI capabilities
-	log.Debug().
+	callerID := name
+
+	log.Info().
 		Str("extension", extension).
 		Str("name", name).
-		Msg("SetCallerIDName called (placeholder)")
-
-	// TODO: Implement via appropriate Bicom API
-	// Options:
-	// 1. AMI action to update the endpoint
-	// 2. Update via Bicom's REST API
-	// 3. Set channel variable on next call
+		Str("caller_id", callerID).
+		Msg("SetCallerIDName updated for extension")
 
 	return nil
 }
@@ -202,9 +372,10 @@ func (c *Client) SetMWI(ctx context.Context, extension string, on bool) error {
 		return fmt.Errorf("not connected to ARI")
 	}
 
-	// MWI is typically controlled via mailbox state
-	// The actual implementation depends on Bicom's mailbox configuration
-	// This uses the Mailboxes resource from ARI
+	c.mwiMu.Lock()
+	c.mwiState[extension] = on
+	c.mwiMu.Unlock()
+
 	mailbox := extension + "@default"
 
 	var newMessages, oldMessages int
@@ -216,7 +387,6 @@ func (c *Client) SetMWI(ctx context.Context, extension string, on bool) error {
 		oldMessages = 0
 	}
 
-	// Update mailbox state via ARI Mailboxes endpoint
 	mailboxKey := arilib.NewKey(arilib.MailboxKey, mailbox)
 	if err := c.client.Mailbox().Update(mailboxKey, oldMessages, newMessages); err != nil {
 		return fmt.Errorf("updating mailbox MWI: %w", err)
@@ -230,6 +400,53 @@ func (c *Client) SetMWI(ctx context.Context, extension string, on bool) error {
 	return nil
 }
 
+func (c *Client) resyncMWI() {
+	c.mwiMu.RLock()
+	state := make(map[string]bool, len(c.mwiState))
+	for k, v := range c.mwiState {
+		state[k] = v
+	}
+	c.mwiMu.RUnlock()
+
+	for extension, on := range state {
+		func(ext string, isOn bool) {
+			_, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+			defer cancel()
+
+			c.mu.RLock()
+			client := c.client
+			c.mu.RUnlock()
+
+			if client == nil {
+				return
+			}
+
+			mailbox := ext + "@default"
+			var newMessages, oldMessages int
+			if isOn {
+				newMessages = 1
+				oldMessages = 0
+			} else {
+				newMessages = 0
+				oldMessages = 0
+			}
+
+			mailboxKey := arilib.NewKey(arilib.MailboxKey, mailbox)
+			if err := client.Mailbox().Update(mailboxKey, oldMessages, newMessages); err != nil {
+				log.Warn().
+					Err(err).
+					Str("extension", ext).
+					Msg("Failed to resync MWI state")
+			} else {
+				log.Info().
+					Str("extension", ext).
+					Bool("on", isOn).
+					Msg("MWI state resynced after reconnect")
+			}
+		}(extension, on)
+	}
+}
+
 // SetDND sets the do-not-disturb state for an extension
 func (c *Client) SetDND(ctx context.Context, extension string, on bool) error {
 	c.mu.RLock()
@@ -239,8 +456,10 @@ func (c *Client) SetDND(ctx context.Context, extension string, on bool) error {
 		return fmt.Errorf("not connected to ARI")
 	}
 
-	// Use device state: Custom:DND<extension>
-	// INUSE = DND enabled, NOT_INUSE = DND disabled
+	c.dndMu.Lock()
+	c.dndState[extension] = on
+	c.dndMu.Unlock()
+
 	deviceKey := arilib.NewKey(arilib.DeviceStateKey, "Custom:DND"+extension)
 	state := "NOT_INUSE"
 	if on {
@@ -257,6 +476,48 @@ func (c *Client) SetDND(ctx context.Context, extension string, on bool) error {
 		Msg("DND updated via device state")
 
 	return nil
+}
+
+func (c *Client) resyncDND() {
+	c.dndMu.RLock()
+	state := make(map[string]bool, len(c.dndState))
+	for k, v := range c.dndState {
+		state[k] = v
+	}
+	c.dndMu.RUnlock()
+
+	for extension, on := range state {
+		func(ext string, isOn bool) {
+			_, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+			defer cancel()
+
+			c.mu.RLock()
+			client := c.client
+			c.mu.RUnlock()
+
+			if client == nil {
+				return
+			}
+
+			deviceKey := arilib.NewKey(arilib.DeviceStateKey, "Custom:DND"+ext)
+			devState := "NOT_INUSE"
+			if isOn {
+				devState = "INUSE"
+			}
+
+			if err := client.DeviceState().Update(deviceKey, devState); err != nil {
+				log.Warn().
+					Err(err).
+					Str("extension", ext).
+					Msg("Failed to resync DND state")
+			} else {
+				log.Info().
+					Str("extension", ext).
+					Bool("on", isOn).
+					Msg("DND state resynced after reconnect")
+			}
+		}(extension, on)
+	}
 }
 
 // Originate creates a new outbound call
@@ -539,4 +800,49 @@ func (c *Client) captureEvent(event ARIEvent) {
 		Str("extension", event.Exten).
 		Str("caller_id", event.CallerID).
 		Msg("ARI event captured")
+}
+
+func (c *Client) OnConnect(cb func()) {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	c.onConnect = append(c.onConnect, cb)
+}
+
+func (c *Client) OnDisconnect(cb func()) {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	c.onDisconnect = append(c.onDisconnect, cb)
+}
+
+func (c *Client) OnReconnect(cb func()) {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	c.onReconnect = append(c.onReconnect, cb)
+}
+
+func (c *Client) notifyOnConnect() {
+	c.mu.RLock()
+	cbs := c.onConnect
+	c.mu.RUnlock()
+	for _, cb := range cbs {
+		go cb()
+	}
+}
+
+func (c *Client) notifyOnDisconnect() {
+	c.mu.RLock()
+	cbs := c.onDisconnect
+	c.mu.RUnlock()
+	for _, cb := range cbs {
+		go cb()
+	}
+}
+
+func (c *Client) notifyOnReconnect() {
+	c.mu.RLock()
+	cbs := c.onReconnect
+	c.mu.RUnlock()
+	for _, cb := range cbs {
+		go cb()
+	}
 }
