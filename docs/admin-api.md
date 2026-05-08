@@ -359,11 +359,29 @@ GET /admin/tenants/{id}/rooms
     "id": 1,
     "tenant_id": "hotel-alpha",
     "room_number": "101",
+    "room_end": null,
     "extension": "1101",
+    "extension_end": null,
+    "match_pattern": null,
     "created_at": "2026-01-02T10:00:00Z",
     "updated_at": "2026-01-02T10:00:00Z"
   }
 ]
+```
+
+Ranges and patterns include their respective fields. For example, a range entry:
+```json
+{
+  "id": 2,
+  "tenant_id": "hotel-alpha",
+  "room_number": "201",
+  "room_end": "205",
+  "extension": "301",
+  "extension_end": "305",
+  "match_pattern": null,
+  "created_at": "2026-01-02T10:00:00Z",
+  "updated_at": "2026-01-02T10:00:00Z"
+}
 ```
 
 ### Get Tenant Room
@@ -378,7 +396,10 @@ GET /admin/tenants/{id}/rooms/{room}
   "id": 1,
   "tenant_id": "hotel-alpha",
   "room_number": "101",
+  "room_end": null,
   "extension": "1101",
+  "extension_end": null,
+  "match_pattern": null,
   "created_at": "2026-01-02T10:00:00Z",
   "updated_at": "2026-01-02T10:00:00Z"
 }

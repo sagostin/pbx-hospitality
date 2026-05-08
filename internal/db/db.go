@@ -3,6 +3,7 @@ package db
 import (
 	"context"
 	"fmt"
+	"regexp"
 	"time"
 
 	"github.com/rs/zerolog/log"
@@ -112,12 +113,15 @@ func (Tenant) TableName() string {
 }
 
 type RoomMapping struct {
-	ID         uint   `gorm:"primaryKey;autoIncrement"`
-	TenantID   string `gorm:"column:tenant_id;size:64;not null;index:idx_room_mappings_tenant"`
-	RoomNumber string `gorm:"column:room_number;size:32;not null"`
-	Extension  string `gorm:"size:32;not null"`
-	CreatedAt  time.Time
-	UpdatedAt  time.Time
+	ID           uint   `gorm:"primaryKey;autoIncrement"`
+	TenantID     string `gorm:"column:tenant_id;size:64;not null;index:idx_room_mappings_tenant"`
+	RoomNumber   string `gorm:"column:room_number;size:32;not null"`
+	RoomEnd      string `gorm:"column:room_end;size:32"` // Range end (inclusive), empty for individual mappings
+	Extension    string `gorm:"size:32;not null"`
+	ExtensionEnd string `gorm:"column:extension_end;size:32"`  // Range end (inclusive), empty for individual mappings
+	MatchPattern string `gorm:"column:match_pattern;size:128"` // Regex pattern for custom matching, overrides room/extension fields
+	CreatedAt    time.Time
+	UpdatedAt    time.Time
 }
 
 func (RoomMapping) TableName() string {
@@ -369,6 +373,64 @@ func (db *DB) GetRoomMapping(ctx context.Context, tenantID, roomNumber string) (
 	return &rm, nil
 }
 
+func (db *DB) FindRoomMapping(ctx context.Context, tenantID, roomNumber string) (*RoomMapping, error) {
+	var rms []RoomMapping
+	if err := db.DB.WithContext(ctx).Where("tenant_id = ?", tenantID).Find(&rms).Error; err != nil {
+		return nil, fmt.Errorf("querying room mappings: %w", err)
+	}
+
+	// Check exact match first
+	for _, rm := range rms {
+		if rm.RoomNumber == roomNumber && rm.RoomEnd == "" && rm.MatchPattern == "" {
+			return &rm, nil
+		}
+	}
+
+	// Check ranges
+	for _, rm := range rms {
+		if rm.RoomEnd != "" && rm.MatchPattern == "" {
+			// Try to parse as numeric range
+			startNum, startOK := parseRoomNumber(rm.RoomNumber)
+			endNum, endOK := parseRoomNumber(rm.RoomEnd)
+			roomNum, roomOK := parseRoomNumber(roomNumber)
+			if startOK && endOK && roomOK && roomNum >= startNum && roomNum <= endNum {
+				return &rm, nil
+			}
+		}
+	}
+
+	// Check pattern matches
+	for _, rm := range rms {
+		if rm.MatchPattern != "" {
+			if matchRoomNumber(roomNumber, rm.MatchPattern) {
+				return &rm, nil
+			}
+		}
+	}
+
+	return nil, nil
+}
+
+func parseRoomNumber(s string) (int, bool) {
+	if s == "" {
+		return 0, false
+	}
+	n := 0
+	for _, c := range s {
+		if c < '0' || c > '9' {
+			return 0, false
+		}
+		n = n*10 + int(c-'0')
+	}
+	return n, true
+}
+
+func matchRoomNumber(room, pattern string) bool {
+	// Simple glob-style matching for patterns like "10[0-5]*"
+	matched, _ := regexp.MatchString(pattern, room)
+	return matched
+}
+
 func (db *DB) ListRoomMappings(ctx context.Context, tenantID string) ([]RoomMapping, error) {
 	var mappings []RoomMapping
 	if err := db.DB.WithContext(ctx).Where("tenant_id = ?", tenantID).Order("room_number").Find(&mappings).Error; err != nil {
@@ -387,8 +449,29 @@ func (db *DB) UpsertRoomMapping(ctx context.Context, tenantID, roomNumber, exten
 	`, tenantID, roomNumber, extension).Error
 }
 
+func (db *DB) UpsertRoomMappingEntry(ctx context.Context, rm *RoomMapping) error {
+	return db.DB.WithContext(ctx).Save(rm).Error
+}
+
 func (db *DB) DeleteRoomMapping(ctx context.Context, tenantID, roomNumber string) error {
-	result := db.DB.WithContext(ctx).Delete(&RoomMapping{}, "tenant_id = ? AND room_number = ?", tenantID, roomNumber)
+	var rm RoomMapping
+	result := db.DB.WithContext(ctx).Where("tenant_id = ? AND room_number = ?", tenantID, roomNumber).First(&rm)
+	if result.Error != nil {
+		if result.Error == gorm.ErrRecordNotFound {
+			return fmt.Errorf("room mapping not found")
+		}
+		return fmt.Errorf("querying room mapping: %w", result.Error)
+	}
+
+	// If it's a range or pattern, use room_number as unique key (even if room_end/match_pattern is set)
+	if rm.RoomEnd != "" || rm.MatchPattern != "" {
+		// For ranges/patterns, room_number is unique - delete by ID
+		result = db.DB.WithContext(ctx).Delete(&RoomMapping{}, "id = ?", rm.ID)
+	} else {
+		// For individuals, use composite key
+		result = db.DB.WithContext(ctx).Delete(&RoomMapping{}, "tenant_id = ? AND room_number = ?", tenantID, roomNumber)
+	}
+
 	if result.Error != nil {
 		return fmt.Errorf("deleting room mapping: %w", result.Error)
 	}

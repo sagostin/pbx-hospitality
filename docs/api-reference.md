@@ -117,19 +117,42 @@ GET /api/v1/tenants/{id}/rooms
 ```http
 POST /api/v1/tenants/{id}/rooms
 Content-Type: application/json
+```
 
+**Individual mapping:**
+```json
 {
-  "room_number": "102",
-  "extension": "1102"
+  "room_number": "101",
+  "extension": "1101"
 }
 ```
+
+**Range mapping (sequential rooms):**
+```json
+{
+  "room_number": "101",
+  "room_end": "105",
+  "extension": "201",
+  "extension_end": "205"
+}
+```
+Room 101 → extension 201, 102 → 202, ..., 105 → 205.
+
+**Pattern mapping (regex):**
+```json
+{
+  "match_pattern": "10[0-5]\\d",
+  "extension": "500"
+}
+```
+Matches rooms 100-159. The extension is applied to all matching rooms.
 
 **Response (201):**
 ```json
 {
   "status": "created",
-  "room_number": "102",
-  "extension": "1102"
+  "room_number": "101",
+  "extension": "1101"
 }
 ```
 

@@ -67,6 +67,10 @@ func (m *Manager) LoadFromDB(ctx context.Context) error {
 			log.Error().Err(err).Str("tenant", t.ID).Msg("Failed to create tenant")
 			continue
 		}
+		// Load room mappings into the mapper
+		if err := tenant.loadRoomMappings(ctx); err != nil {
+			log.Warn().Err(err).Str("tenant", t.ID).Msg("Failed to load room mappings")
+		}
 		if err := tenant.Start(ctx); err != nil {
 			log.Error().Err(err).Str("tenant", t.ID).Msg("Failed to start tenant")
 			continue
@@ -319,6 +323,9 @@ func (m *Manager) ReloadFromDB(ctx context.Context) error {
 					log.Error().Err(err).Str("tenant", t.ID).Msg("Failed to recreate tenant")
 					continue
 				}
+				if err := newTenant.loadRoomMappings(ctx); err != nil {
+					log.Warn().Err(err).Str("tenant", t.ID).Msg("Failed to load room mappings")
+				}
 				if err := newTenant.Start(ctx); err != nil {
 					log.Error().Err(err).Str("tenant", t.ID).Msg("Failed to restart tenant")
 					continue
@@ -328,6 +335,10 @@ func (m *Manager) ReloadFromDB(ctx context.Context) error {
 				// Just update config fields that don't require restart
 				existing.Name = tc.Name
 				existing.cfg = tc
+				// Reload room mappings
+				if err := existing.loadRoomMappings(ctx); err != nil {
+					log.Warn().Err(err).Str("tenant", t.ID).Msg("Failed to reload room mappings")
+				}
 				log.Debug().Str("tenant", t.ID).Msg("Tenant config updated")
 			}
 		} else {
@@ -337,6 +348,9 @@ func (m *Manager) ReloadFromDB(ctx context.Context) error {
 			if err != nil {
 				log.Error().Err(err).Str("tenant", t.ID).Msg("Failed to create new tenant")
 				continue
+			}
+			if err := newTenant.loadRoomMappings(ctx); err != nil {
+				log.Warn().Err(err).Str("tenant", t.ID).Msg("Failed to load room mappings")
 			}
 			if err := newTenant.Start(ctx); err != nil {
 				log.Error().Err(err).Str("tenant", t.ID).Msg("Failed to start new tenant")
@@ -375,6 +389,9 @@ func (m *Manager) UpdateTenantRuntime(tc config.TenantConfig) error {
 		newTenant, err := NewTenant(tc, m.database)
 		if err != nil {
 			return fmt.Errorf("recreating tenant: %w", err)
+		}
+		if err := newTenant.loadRoomMappings(ctx); err != nil {
+			log.Warn().Err(err).Str("tenant", tc.ID).Msg("Failed to load room mappings")
 		}
 		if err := newTenant.Start(ctx); err != nil {
 			return fmt.Errorf("starting tenant: %w", err)
@@ -422,6 +439,31 @@ func NewTenant(cfg config.TenantConfig, database *db.DB) (*Tenant, error) {
 		timezone: tz,
 	}
 	return t, nil
+}
+
+// loadRoomMappings loads room mappings from the database into the mapper
+func (t *Tenant) loadRoomMappings(ctx context.Context) error {
+	if t.database == nil {
+		return nil
+	}
+	mappings, err := t.database.ListRoomMappings(ctx, t.ID)
+	if err != nil {
+		return fmt.Errorf("listing room mappings: %w", err)
+	}
+	for _, rm := range mappings {
+		if rm.MatchPattern != "" {
+			if err := t.mapper.SetPattern(rm.MatchPattern, rm.Extension); err != nil {
+				log.Warn().Err(err).Str("tenant", t.ID).Str("pattern", rm.MatchPattern).Msg("Invalid pattern in room mapping")
+			}
+		} else if rm.RoomEnd != "" {
+			if err := t.mapper.SetRange(rm.RoomNumber, rm.RoomEnd, rm.Extension, rm.ExtensionEnd); err != nil {
+				log.Warn().Err(err).Str("tenant", t.ID).Str("room", rm.RoomNumber).Msg("Invalid range in room mapping")
+			}
+		} else {
+			t.mapper.SetMapping(rm.RoomNumber, rm.Extension)
+		}
+	}
+	return nil
 }
 
 // Start initializes and starts the tenant services

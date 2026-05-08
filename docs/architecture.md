@@ -296,6 +296,10 @@ type RoomMapper interface {
 - **Direct**: Room 101 → Extension 101
 - **Prefixed**: Room 101 → Extension 1101 (tenant prefix)
 - **Custom**: Database lookup per room
+- **Range**: Room 101-105 → Extension 201-205 (sequential offset)
+- **Pattern**: Regex match (e.g., `10[0-5]\d` → Extension 500)
+
+**Lookup Order:** Exact match → Range → Pattern → Prefix fallback
 
 ### 4. Event Processor
 
@@ -337,14 +341,18 @@ CREATE TABLE tenants (
     updated_at  TIMESTAMPTZ DEFAULT NOW()
 );
 
--- Room-to-extension mappings
+-- Room-to-extension mappings (individual, range, or pattern-based)
 CREATE TABLE room_mappings (
-    id          SERIAL PRIMARY KEY,
-    tenant_id   VARCHAR(64) REFERENCES tenants(id),
-    room_number VARCHAR(32) NOT NULL,
-    extension   VARCHAR(32) NOT NULL,
-    UNIQUE(tenant_id, room_number),
-    UNIQUE(tenant_id, extension)
+    id            SERIAL PRIMARY KEY,
+    tenant_id     VARCHAR(64) REFERENCES tenants(id),
+    room_number   VARCHAR(32) NOT NULL,        -- Start of range or exact room
+    room_end      VARCHAR(32),                  -- Range end (NULL for individual)
+    extension     VARCHAR(32) NOT NULL,         -- Extension or start of range
+    extension_end VARCHAR(32),                  -- Range extension end (NULL for individual)
+    match_pattern VARCHAR(128),                 -- Regex pattern (overrides room/extension)
+    created_at    TIMESTAMPTZ DEFAULT NOW(),
+    updated_at    TIMESTAMPTZ DEFAULT NOW(),
+    UNIQUE(tenant_id, room_number)
 );
 
 -- Guest sessions for tracking check-in/out

@@ -280,8 +280,11 @@ func (s *Server) listRooms(c *fiber.Ctx) error {
 }
 
 type createRoomRequest struct {
-	RoomNumber string `json:"room_number"`
-	Extension  string `json:"extension"`
+	RoomNumber   string `json:"room_number"`
+	RoomEnd      string `json:"room_end,omitempty"` // Range end (optional)
+	Extension    string `json:"extension"`
+	ExtensionEnd string `json:"extension_end,omitempty"` // Range extension end (optional)
+	MatchPattern string `json:"match_pattern,omitempty"` // Regex pattern (optional)
 }
 
 func (s *Server) createRoomMapping(c *fiber.Ctx) error {
@@ -299,10 +302,66 @@ func (s *Server) createRoomMapping(c *fiber.Ctx) error {
 		return c.Status(fiber.StatusBadRequest).SendString("invalid request body")
 	}
 
+	// Validate based on mapping type
+	hasRange := req.RoomEnd != "" || req.ExtensionEnd != ""
+	hasPattern := req.MatchPattern != ""
+
+	if hasPattern && (hasRange || req.RoomNumber != "") {
+		return c.Status(fiber.StatusBadRequest).SendString("match_pattern cannot be combined with room_number or range")
+	}
+
+	if hasPattern {
+		// Pattern mapping
+		if req.Extension == "" {
+			return c.Status(fiber.StatusBadRequest).SendString("extension required for pattern mapping")
+		}
+		rm := &db.RoomMapping{
+			TenantID:     id,
+			MatchPattern: req.MatchPattern,
+			Extension:    req.Extension,
+		}
+		if err := s.db.UpsertRoomMappingEntry(c.Context(), rm); err != nil {
+			log.Error().Err(err).Str("tenant", id).Msg("Failed to create pattern mapping")
+			return c.Status(fiber.StatusInternalServerError).SendString("internal error")
+		}
+		c.Set("Content-Type", "application/json")
+		return c.Status(fiber.StatusCreated).JSON(map[string]interface{}{
+			"status":        "created",
+			"match_pattern": req.MatchPattern,
+			"extension":     req.Extension,
+		})
+	}
+
+	if hasRange {
+		// Range mapping
+		if req.RoomNumber == "" || req.RoomEnd == "" || req.Extension == "" || req.ExtensionEnd == "" {
+			return c.Status(fiber.StatusBadRequest).SendString("room_number, room_end, extension, and extension_end required for range mapping")
+		}
+		rm := &db.RoomMapping{
+			TenantID:     id,
+			RoomNumber:   req.RoomNumber,
+			RoomEnd:      req.RoomEnd,
+			Extension:    req.Extension,
+			ExtensionEnd: req.ExtensionEnd,
+		}
+		if err := s.db.UpsertRoomMappingEntry(c.Context(), rm); err != nil {
+			log.Error().Err(err).Str("tenant", id).Msg("Failed to create range mapping")
+			return c.Status(fiber.StatusInternalServerError).SendString("internal error")
+		}
+		c.Set("Content-Type", "application/json")
+		return c.Status(fiber.StatusCreated).JSON(map[string]interface{}{
+			"status":        "created",
+			"room_number":   req.RoomNumber,
+			"room_end":      req.RoomEnd,
+			"extension":     req.Extension,
+			"extension_end": req.ExtensionEnd,
+		})
+	}
+
+	// Individual mapping (backward compatible)
 	if req.RoomNumber == "" || req.Extension == "" {
 		return c.Status(fiber.StatusBadRequest).SendString("room_number and extension required")
 	}
-
 	if err := s.db.UpsertRoomMapping(c.Context(), id, req.RoomNumber, req.Extension); err != nil {
 		log.Error().Err(err).Str("tenant", id).Msg("Failed to create room mapping")
 		return c.Status(fiber.StatusInternalServerError).SendString("internal error")
