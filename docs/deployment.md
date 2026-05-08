@@ -92,22 +92,18 @@ docker compose logs -f hospitality
 
 ## Database Setup
 
-### Apply Migrations
+### Schema Creation
 
-```bash
-# Using psql
-psql -h localhost -U hospitality -d hospitality -f migrations/001_initial.sql
-
-# Or via Docker
-docker compose exec db psql -U hospitality -d hospitality \
-  -f /migrations/001_initial.sql
-```
+Database schema is created automatically via GORM AutoMigrate on application startup. No manual migration files are required.
 
 ### Schema Overview
 
 | Table | Purpose |
 |-------|---------|
-| `tenants` | Tenant configurations (JSONB) |
+| `sites` | Physical property with auth code |
+| `tenants` | Hotel instance with PMS/PBX config |
+| `bicom_systems` | PBX connection configuration |
+| `site_bicom_mappings` | Site-to-PBX associations |
 | `room_mappings` | Room number → Extension mapping |
 | `guest_sessions` | Check-in/out history |
 | `pms_events` | Audit log of all PMS events |

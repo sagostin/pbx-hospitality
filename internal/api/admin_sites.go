@@ -267,3 +267,37 @@ func siteMapToJSON(m map[string]interface{}) string {
 	b, _ := json.Marshal(m)
 	return string(b)
 }
+
+func (s *AdminServer) listSiteBicomSystems(c *fiber.Ctx) error {
+	if s.db == nil {
+		return writeError(c, "database not configured", "DB_NOT_CONFIGURED", fiber.StatusServiceUnavailable)
+	}
+
+	siteID := c.Params("id")
+	if !validateSiteID(siteID) {
+		return writeError(c, "invalid site ID format", "INVALID_ID", fiber.StatusBadRequest)
+	}
+
+	site, err := s.db.GetSite(c.Context(), siteID)
+	if err != nil {
+		log.Error().Err(err).Str("site", siteID).Msg("Failed to get site")
+		return writeError(c, "failed to get site", "INTERNAL_ERROR", fiber.StatusInternalServerError)
+	}
+	if site == nil {
+		return writeError(c, "site not found", "NOT_FOUND", fiber.StatusNotFound)
+	}
+
+	systems, err := s.db.GetBicomSystemsForSite(c.Context(), siteID)
+	if err != nil {
+		log.Error().Err(err).Str("site", siteID).Msg("Failed to list bicom systems for site")
+		return writeError(c, "failed to list bicom systems", "INTERNAL_ERROR", fiber.StatusInternalServerError)
+	}
+
+	result := make([]bicomSystemResponse, 0, len(systems))
+	for _, sys := range systems {
+		result = append(result, toBicomSystemResponse(sys))
+	}
+
+	c.Set("Content-Type", "application/json")
+	return c.JSON(result)
+}

@@ -10,6 +10,7 @@ import (
 	"github.com/gofiber/fiber/v2/middleware/logger"
 	"github.com/gofiber/fiber/v2/middleware/recover"
 	"github.com/gofiber/fiber/v2/middleware/requestid"
+	fiberws "github.com/gofiber/websocket/v2"
 	"github.com/prometheus/client_golang/prometheus/promhttp"
 	"github.com/rs/zerolog/log"
 
@@ -19,6 +20,7 @@ import (
 	"github.com/sagostin/pbx-hospitality/internal/pms"
 	"github.com/sagostin/pbx-hospitality/internal/pms/tigertms"
 	"github.com/sagostin/pbx-hospitality/internal/tenant"
+	"github.com/sagostin/pbx-hospitality/internal/websocket"
 )
 
 type Server struct {
@@ -27,6 +29,7 @@ type Server struct {
 	cfg              *config.Config
 	db               *db.DB
 	tigertmsHandlers map[*fiber.App]string
+	logSink          *websocket.LogSink
 }
 
 func NewRouter(tm *tenant.Manager, pbxMgr *pbx.Manager, cfg *config.Config) http.Handler {
@@ -53,6 +56,12 @@ func NewRouterWithDB(tm *tenant.Manager, pbxMgr *pbx.Manager, cfg *config.Config
 
 	app.Get("/metrics", adaptor.HTTPHandler(promhttp.Handler()))
 
+	if cfg.Logging.WebSocketLogs.Enabled {
+		s.logSink = websocket.NewLogSink()
+		app.Use("/ws/logs", fiberws.New(s.logSink.HandleWS))
+		log.Info().Str("path", cfg.Logging.WebSocketLogs.Path).Msg("WebSocket log sink enabled")
+	}
+
 	admin := &AdminServer{Server: s, pbxManager: pbxMgr}
 	adminGroup := app.Group("/admin/tenants")
 	adminGroup.Use(adminKeyMiddleware(cfg.Server.AdminAPIKey))
@@ -62,6 +71,16 @@ func NewRouterWithDB(tm *tenant.Manager, pbxMgr *pbx.Manager, cfg *config.Config
 	adminGroup.Put("/:id", admin.updateTenant)
 	adminGroup.Delete("/:id", admin.deleteTenant)
 	adminGroup.Post("/import", admin.importTenants)
+	adminGroup.Get("/:id/rooms", admin.listTenantRooms)
+	adminGroup.Get("/:id/rooms/:room", admin.getTenantRoom)
+	adminGroup.Delete("/:id/rooms/:room", admin.deleteTenantRoom)
+	adminGroup.Get("/:id/sessions", admin.listTenantSessions)
+	adminGroup.Get("/:id/sessions/:room", admin.getTenantSession)
+	adminGroup.Delete("/:id/sessions/:room", admin.deleteTenantSession)
+	adminGroup.Get("/:id/events", admin.listTenantEvents)
+	adminGroup.Delete("/:id/events/:eventID", admin.deleteTenantEvent)
+	adminGroup.Post("/:id/events/:eventID/retry", admin.retryTenantEvent)
+	adminGroup.Get("/:id/health", admin.getTenantHealth)
 
 	adminSitesGroup := app.Group("/admin/sites")
 	adminSitesGroup.Use(adminKeyMiddleware(cfg.Server.AdminAPIKey))
@@ -74,6 +93,7 @@ func NewRouterWithDB(tm *tenant.Manager, pbxMgr *pbx.Manager, cfg *config.Config
 	adminSitesGroup.Post("/:id/bicom", admin.addSiteBicomMapping)
 	adminSitesGroup.Delete("/:id/bicom/:bicomSystemId", admin.removeSiteBicomMapping)
 	adminSitesGroup.Get("/:id/health", admin.getSiteHealth)
+	adminSitesGroup.Get("/:id/bicom-systems", admin.listSiteBicomSystems)
 
 	adminBicomGroup := app.Group("/admin/bicom-systems")
 	adminBicomGroup.Use(adminKeyMiddleware(cfg.Server.AdminAPIKey))

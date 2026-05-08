@@ -13,9 +13,9 @@ import (
 )
 
 const (
-	reconnectBaseDelay    = 1 * time.Second
-	reconnectMaxDelay     = 60 * time.Second
-	maxReconnectAttempts  = 10
+	reconnectBaseDelay           = 1 * time.Second
+	reconnectMaxDelay            = 60 * time.Second
+	maxReconnectAttempts         = 10
 	subscriptionsLostLogInterval = 10
 )
 
@@ -23,18 +23,18 @@ const (
 type EventType string
 
 const (
-	EventTypeStasisStart        EventType = "StasisStart"
-	EventTypeStasisEnd          EventType = "StasisEnd"
+	EventTypeStasisStart         EventType = "StasisStart"
+	EventTypeStasisEnd           EventType = "StasisEnd"
 	EventTypeChannelStateChange  EventType = "ChannelStateChange"
 	EventTypeChannelCreated      EventType = "ChannelCreated"
 	EventTypeChannelDestroyed    EventType = "ChannelDestroyed"
 	EventTypePlaybackStarted     EventType = "PlaybackStarted"
 	EventTypePlaybackFinished    EventType = "PlaybackFinished"
-	EventTypeDial               EventType = "Dial"
+	EventTypeDial                EventType = "Dial"
 	EventTypeBridgeCreated       EventType = "BridgeCreated"
-	EventTypeBridgeDestroyed    EventType = "BridgeDestroyed"
+	EventTypeBridgeDestroyed     EventType = "BridgeDestroyed"
 	EventTypeEndpointStateChange EventType = "EndpointStateChange"
-	EventTypeUnknown            EventType = "Unknown"
+	EventTypeUnknown             EventType = "Unknown"
 )
 
 // Config holds ARI client configuration
@@ -48,15 +48,15 @@ type Config struct {
 
 // ARIEvent represents a captured ARI event for debugging/analysis
 type ARIEvent struct {
-	Type      EventType
-	Timestamp time.Time
-	ChannelID string
-	Exten     string
-	CallerID  string
+	Type       EventType
+	Timestamp  time.Time
+	ChannelID  string
+	Exten      string
+	CallerID   string
 	CallerName string
-	Dialplan  string
-	State     string
-	Metadata  map[string]string
+	Dialplan   string
+	State      string
+	Metadata   map[string]string
 }
 
 // EventObserver is a callback interface for receiving ARI events
@@ -69,8 +69,8 @@ type EventFilter struct {
 	IncludeStasisStart        bool
 	IncludeStasisEnd          bool
 	IncludeChannelStateChange bool
-	IncludeDial              bool
-	IncludeAll               bool
+	IncludeDial               bool
+	IncludeAll                bool
 }
 
 // DefaultEventFilter returns a filter that captures all events
@@ -91,7 +91,7 @@ type Client struct {
 	// Event debugging
 	observers []EventObserver
 	filter    EventFilter
-	events    []ARIEvent       // Circular buffer of recent events
+	events    []ARIEvent // Circular buffer of recent events
 	eventsMu  sync.RWMutex
 	eventSub  arilib.Subscription
 
@@ -127,9 +127,9 @@ func NewClient(cfg Config) (*Client, error) {
 	}
 
 	return &Client{
-		cfg:       cfg,
-		mwiState:  make(map[string]bool),
-		dndState:  make(map[string]bool),
+		cfg:      cfg,
+		mwiState: make(map[string]bool),
+		dndState: make(map[string]bool),
 	}, nil
 }
 
@@ -148,6 +148,7 @@ func (c *Client) Connect(ctx context.Context) error {
 		Password:     c.cfg.Password,
 	})
 	if err != nil {
+		log.Error().Err(err).Str("url", c.cfg.URL).Msg("Failed to connect to ARI")
 		return fmt.Errorf("connecting to ARI: %w", err)
 	}
 
@@ -160,6 +161,8 @@ func (c *Client) Connect(ctx context.Context) error {
 		Str("url", c.cfg.URL).
 		Str("app", c.cfg.AppName).
 		Msg("Connected to ARI")
+
+	c.notifyOnConnect()
 
 	// Start reconnection monitor
 	go c.monitorConnection(ctx)
@@ -234,16 +237,18 @@ func (c *Client) reconnect(ctx context.Context) {
 			Err(err).
 			Int("attempt", c.reconnectCount).
 			Msg("Failed to reconnect to ARI")
+		c.notifyOnDisconnect()
 
 		c.mu.Lock()
 		c.reconnecting = false
 		c.mu.Unlock()
 
 		if c.reconnectCount >= maxReconnectAttempts {
-			log.Error().Msg("Max reconnect attempts reached")
+			log.Error().Msg("Max reconnect attempts reached, giving up")
 		}
 	} else {
 		log.Info().Msg("Successfully reconnected to ARI")
+		c.notifyOnReconnect()
 
 		c.mu.Lock()
 		c.reconnecting = false
@@ -292,6 +297,7 @@ func (c *Client) subscribeToEvents() {
 	}
 
 	if c.client == nil {
+		log.Warn().Msg("subscribeToEvents: client not available")
 		c.mu.Unlock()
 		return
 	}
@@ -333,6 +339,7 @@ func (c *Client) Close() error {
 		c.connected = false
 	}
 
+	log.Info().Msg("ARI client closed")
 	return nil
 }
 
@@ -641,6 +648,8 @@ func (c *Client) processEvents() {
 		}
 		c.handleARIEvent(v)
 	}
+
+	log.Info().Msg("ARI event subscription closed")
 }
 
 // handleARIEvent converts ARI events to ARIEvent and captures them
@@ -659,22 +668,22 @@ func (c *Client) handleARIEvent(v interface{}) {
 		})
 	case *arilib.StasisEnd:
 		c.captureEvent(ARIEvent{
-			Type:       EventTypeStasisEnd,
-			Timestamp:  time.Now(),
-			ChannelID:  event.Channel.ID,
-			CallerID:   extractCallerNumber(event.Channel),
-			State:      string(event.Channel.State),
-			Metadata:   extractChannelMetadata(event.Channel),
+			Type:      EventTypeStasisEnd,
+			Timestamp: time.Now(),
+			ChannelID: event.Channel.ID,
+			CallerID:  extractCallerNumber(event.Channel),
+			State:     string(event.Channel.State),
+			Metadata:  extractChannelMetadata(event.Channel),
 		})
 	case *arilib.ChannelStateChange:
 		c.captureEvent(ARIEvent{
-			Type:       EventTypeChannelStateChange,
-			Timestamp:  time.Now(),
-			ChannelID:  event.Channel.ID,
-			Exten:      extractDialedNumber(event.Channel),
-			CallerID:   extractCallerNumber(event.Channel),
-			State:      string(event.Channel.State),
-			Metadata:   extractChannelMetadata(event.Channel),
+			Type:      EventTypeChannelStateChange,
+			Timestamp: time.Now(),
+			ChannelID: event.Channel.ID,
+			Exten:     extractDialedNumber(event.Channel),
+			CallerID:  extractCallerNumber(event.Channel),
+			State:     string(event.Channel.State),
+			Metadata:  extractChannelMetadata(event.Channel),
 		})
 	case *arilib.Dial:
 		// Dial events contain caller and peer channel data
@@ -695,9 +704,9 @@ func (c *Client) handleARIEvent(v interface{}) {
 		})
 	default:
 		c.captureEvent(ARIEvent{
-			Type:       EventTypeUnknown,
-			Timestamp:  time.Now(),
-			Metadata:   map[string]string{"raw_type": fmt.Sprintf("%T", v)},
+			Type:      EventTypeUnknown,
+			Timestamp: time.Now(),
+			Metadata:  map[string]string{"raw_type": fmt.Sprintf("%T", v)},
 		})
 	}
 }
@@ -825,6 +834,7 @@ func (c *Client) notifyOnConnect() {
 	cbs := c.onConnect
 	c.mu.RUnlock()
 	for _, cb := range cbs {
+		log.Debug().Msg("ARI connect callback triggered")
 		go cb()
 	}
 }
@@ -833,6 +843,7 @@ func (c *Client) notifyOnDisconnect() {
 	c.mu.RLock()
 	cbs := c.onDisconnect
 	c.mu.RUnlock()
+	log.Warn().Int("count", len(cbs)).Msg("ARI disconnect callback triggered")
 	for _, cb := range cbs {
 		go cb()
 	}
@@ -842,6 +853,7 @@ func (c *Client) notifyOnReconnect() {
 	c.mu.RLock()
 	cbs := c.onReconnect
 	c.mu.RUnlock()
+	log.Info().Int("count", len(cbs)).Msg("ARI reconnect callback triggered")
 	for _, cb := range cbs {
 		go cb()
 	}

@@ -280,6 +280,322 @@ func (s *AdminServer) deleteTenant(c *fiber.Ctx) error {
 	return c.SendStatus(fiber.StatusNoContent)
 }
 
+func (s *AdminServer) listTenantRooms(c *fiber.Ctx) error {
+	if s.db == nil {
+		return writeError(c, "database not configured", "DB_NOT_CONFIGURED", fiber.StatusServiceUnavailable)
+	}
+
+	tenantID := c.Params("id")
+	if !validateTenantID(tenantID) {
+		return writeError(c, "invalid tenant ID format", "INVALID_ID", fiber.StatusBadRequest)
+	}
+
+	mappings, err := s.db.ListRoomMappings(c.Context(), tenantID)
+	if err != nil {
+		log.Error().Err(err).Str("tenant", tenantID).Msg("Failed to list room mappings")
+		return writeError(c, "failed to list rooms", "INTERNAL_ERROR", fiber.StatusInternalServerError)
+	}
+
+	c.Set("Content-Type", "application/json")
+	return c.JSON(mappings)
+}
+
+func (s *AdminServer) getTenantRoom(c *fiber.Ctx) error {
+	if s.db == nil {
+		return writeError(c, "database not configured", "DB_NOT_CONFIGURED", fiber.StatusServiceUnavailable)
+	}
+
+	tenantID := c.Params("id")
+	roomNumber := c.Params("room")
+	if !validateTenantID(tenantID) {
+		return writeError(c, "invalid tenant ID format", "INVALID_ID", fiber.StatusBadRequest)
+	}
+	if roomNumber == "" {
+		return writeError(c, "room number is required", "VALIDATION_ERROR", fiber.StatusBadRequest)
+	}
+
+	mapping, err := s.db.GetRoomMapping(c.Context(), tenantID, roomNumber)
+	if err != nil {
+		log.Error().Err(err).Str("tenant", tenantID).Msg("Failed to get room mapping")
+		return writeError(c, "failed to get room", "INTERNAL_ERROR", fiber.StatusInternalServerError)
+	}
+	if mapping == nil {
+		return writeError(c, "room mapping not found", "NOT_FOUND", fiber.StatusNotFound)
+	}
+
+	c.Set("Content-Type", "application/json")
+	return c.JSON(mapping)
+}
+
+func (s *AdminServer) deleteTenantRoom(c *fiber.Ctx) error {
+	if s.db == nil {
+		return writeError(c, "database not configured", "DB_NOT_CONFIGURED", fiber.StatusServiceUnavailable)
+	}
+
+	tenantID := c.Params("id")
+	roomNumber := c.Params("room")
+	if !validateTenantID(tenantID) {
+		return writeError(c, "invalid tenant ID format", "INVALID_ID", fiber.StatusBadRequest)
+	}
+	if roomNumber == "" {
+		return writeError(c, "room number is required", "VALIDATION_ERROR", fiber.StatusBadRequest)
+	}
+
+	if err := s.db.DeleteRoomMapping(c.Context(), tenantID, roomNumber); err != nil {
+		if err.Error() == "room mapping not found" {
+			return writeError(c, "room mapping not found", "NOT_FOUND", fiber.StatusNotFound)
+		}
+		log.Error().Err(err).Str("tenant", tenantID).Msg("Failed to delete room mapping")
+		return writeError(c, "failed to delete room", "INTERNAL_ERROR", fiber.StatusInternalServerError)
+	}
+
+	return c.SendStatus(fiber.StatusNoContent)
+}
+
+func (s *AdminServer) listTenantSessions(c *fiber.Ctx) error {
+	if s.db == nil {
+		return writeError(c, "database not configured", "DB_NOT_CONFIGURED", fiber.StatusServiceUnavailable)
+	}
+
+	tenantID := c.Params("id")
+	if !validateTenantID(tenantID) {
+		return writeError(c, "invalid tenant ID format", "INVALID_ID", fiber.StatusBadRequest)
+	}
+
+	allSessions := c.QueryBool("all", false)
+	if allSessions {
+		sessions, err := s.db.ListAllGuestSessions(c.Context(), tenantID)
+		if err != nil {
+			log.Error().Err(err).Str("tenant", tenantID).Msg("Failed to list guest sessions")
+			return writeError(c, "failed to list sessions", "INTERNAL_ERROR", fiber.StatusInternalServerError)
+		}
+		c.Set("Content-Type", "application/json")
+		return c.JSON(sessions)
+	}
+
+	sessions, err := s.db.ListActiveSessions(c.Context(), tenantID)
+	if err != nil {
+		log.Error().Err(err).Str("tenant", tenantID).Msg("Failed to list active sessions")
+		return writeError(c, "failed to list sessions", "INTERNAL_ERROR", fiber.StatusInternalServerError)
+	}
+
+	c.Set("Content-Type", "application/json")
+	return c.JSON(sessions)
+}
+
+func (s *AdminServer) getTenantSession(c *fiber.Ctx) error {
+	if s.db == nil {
+		return writeError(c, "database not configured", "DB_NOT_CONFIGURED", fiber.StatusServiceUnavailable)
+	}
+
+	tenantID := c.Params("id")
+	roomNumber := c.Params("room")
+	if !validateTenantID(tenantID) {
+		return writeError(c, "invalid tenant ID format", "INVALID_ID", fiber.StatusBadRequest)
+	}
+	if roomNumber == "" {
+		return writeError(c, "room number is required", "VALIDATION_ERROR", fiber.StatusBadRequest)
+	}
+
+	session, err := s.db.GetGuestSessionByRoom(c.Context(), tenantID, roomNumber)
+	if err != nil {
+		log.Error().Err(err).Str("tenant", tenantID).Msg("Failed to get guest session")
+		return writeError(c, "failed to get session", "INTERNAL_ERROR", fiber.StatusInternalServerError)
+	}
+	if session == nil {
+		return writeError(c, "session not found", "NOT_FOUND", fiber.StatusNotFound)
+	}
+
+	c.Set("Content-Type", "application/json")
+	return c.JSON(session)
+}
+
+func (s *AdminServer) deleteTenantSession(c *fiber.Ctx) error {
+	if s.db == nil {
+		return writeError(c, "database not configured", "DB_NOT_CONFIGURED", fiber.StatusServiceUnavailable)
+	}
+
+	tenantID := c.Params("id")
+	roomNumber := c.Params("room")
+	if !validateTenantID(tenantID) {
+		return writeError(c, "invalid tenant ID format", "INVALID_ID", fiber.StatusBadRequest)
+	}
+	if roomNumber == "" {
+		return writeError(c, "room number is required", "VALIDATION_ERROR", fiber.StatusBadRequest)
+	}
+
+	if err := s.db.DeleteGuestSession(c.Context(), tenantID, roomNumber); err != nil {
+		log.Error().Err(err).Str("tenant", tenantID).Msg("Failed to delete guest session")
+		return writeError(c, "failed to delete session", "INTERNAL_ERROR", fiber.StatusInternalServerError)
+	}
+
+	return c.SendStatus(fiber.StatusNoContent)
+}
+
+func (s *AdminServer) listTenantEvents(c *fiber.Ctx) error {
+	if s.db == nil {
+		return writeError(c, "database not configured", "DB_NOT_CONFIGURED", fiber.StatusServiceUnavailable)
+	}
+
+	tenantID := c.Params("id")
+	if !validateTenantID(tenantID) {
+		return writeError(c, "invalid tenant ID format", "INVALID_ID", fiber.StatusBadRequest)
+	}
+
+	limit := 50
+	if l := c.Query("limit"); l != "" {
+		if parsed := parsePositiveInt(l); parsed > 0 && parsed <= 500 {
+			limit = parsed
+		}
+	}
+
+	offset := parsePositiveInt(c.Query("offset"))
+
+	var processed *bool
+	if c.Query("processed") != "" {
+		p := c.QueryBool("processed", false)
+		processed = &p
+	}
+
+	events, err := s.db.ListPMSEvents(c.Context(), tenantID, processed, limit, offset)
+	if err != nil {
+		log.Error().Err(err).Str("tenant", tenantID).Msg("Failed to list PMS events")
+		return writeError(c, "failed to list events", "INTERNAL_ERROR", fiber.StatusInternalServerError)
+	}
+
+	c.Set("Content-Type", "application/json")
+	return c.JSON(events)
+}
+
+func (s *AdminServer) deleteTenantEvent(c *fiber.Ctx) error {
+	if s.db == nil {
+		return writeError(c, "database not configured", "DB_NOT_CONFIGURED", fiber.StatusServiceUnavailable)
+	}
+
+	tenantID := c.Params("id")
+	eventID := c.Params("eventID")
+	if !validateTenantID(tenantID) {
+		return writeError(c, "invalid tenant ID format", "INVALID_ID", fiber.StatusBadRequest)
+	}
+
+	id := parsePositiveInt(eventID)
+	if id == 0 {
+		return writeError(c, "invalid event ID", "INVALID_ID", fiber.StatusBadRequest)
+	}
+
+	event, err := s.db.GetPMSEvent(c.Context(), tenantID, int64(id))
+	if err != nil {
+		log.Error().Err(err).Str("tenant", tenantID).Msg("Failed to get PMS event")
+		return writeError(c, "failed to get event", "INTERNAL_ERROR", fiber.StatusInternalServerError)
+	}
+	if event == nil {
+		return writeError(c, "event not found", "NOT_FOUND", fiber.StatusNotFound)
+	}
+
+	if err := s.db.DeletePMSEvent(c.Context(), int64(id)); err != nil {
+		log.Error().Err(err).Str("tenant", tenantID).Msg("Failed to delete PMS event")
+		return writeError(c, "failed to delete event", "INTERNAL_ERROR", fiber.StatusInternalServerError)
+	}
+
+	return c.SendStatus(fiber.StatusNoContent)
+}
+
+func (s *AdminServer) retryTenantEvent(c *fiber.Ctx) error {
+	if s.db == nil {
+		return writeError(c, "database not configured", "DB_NOT_CONFIGURED", fiber.StatusServiceUnavailable)
+	}
+
+	tenantID := c.Params("id")
+	eventID := c.Params("eventID")
+	if !validateTenantID(tenantID) {
+		return writeError(c, "invalid tenant ID format", "INVALID_ID", fiber.StatusBadRequest)
+	}
+
+	id := parsePositiveInt(eventID)
+	if id == 0 {
+		return writeError(c, "invalid event ID", "INVALID_ID", fiber.StatusBadRequest)
+	}
+
+	event, err := s.db.GetPMSEvent(c.Context(), tenantID, int64(id))
+	if err != nil {
+		log.Error().Err(err).Str("tenant", tenantID).Msg("Failed to get PMS event")
+		return writeError(c, "failed to get event", "INTERNAL_ERROR", fiber.StatusInternalServerError)
+	}
+	if event == nil {
+		return writeError(c, "event not found", "NOT_FOUND", fiber.StatusNotFound)
+	}
+
+	if err := s.db.ResetPMSEvent(c.Context(), int64(id)); err != nil {
+		log.Error().Err(err).Str("tenant", tenantID).Msg("Failed to reset PMS event")
+		return writeError(c, "failed to reset event", "INTERNAL_ERROR", fiber.StatusInternalServerError)
+	}
+
+	c.Set("Content-Type", "application/json")
+	return c.JSON(map[string]interface{}{
+		"status":   "reset",
+		"event_id": id,
+		"tenant":   tenantID,
+	})
+}
+
+func (s *AdminServer) getTenantHealth(c *fiber.Ctx) error {
+	if s.db == nil {
+		return writeError(c, "database not configured", "DB_NOT_CONFIGURED", fiber.StatusServiceUnavailable)
+	}
+
+	tenantID := c.Params("id")
+	if !validateTenantID(tenantID) {
+		return writeError(c, "invalid tenant ID format", "INVALID_ID", fiber.StatusBadRequest)
+	}
+
+	t, err := s.db.GetTenant(c.Context(), tenantID)
+	if err != nil {
+		log.Error().Err(err).Str("tenant", tenantID).Msg("Failed to get tenant")
+		return writeError(c, "failed to get tenant", "INTERNAL_ERROR", fiber.StatusInternalServerError)
+	}
+	if t == nil {
+		return writeError(c, "tenant not found", "NOT_FOUND", fiber.StatusNotFound)
+	}
+
+	var pmsConnected, pbxConnected bool
+	pmsCfg := parseJSONMap(t.PMSConfig)
+	if pmsCfg != nil && len(pmsCfg) > 0 {
+		pmsConnected = true
+	}
+	pbxCfg := parseJSONMap(t.PBXConfig)
+	if pbxCfg != nil && len(pbxCfg) > 0 {
+		pbxConnected = true
+	}
+
+	rooms, _ := s.db.ListRoomMappings(c.Context(), tenantID)
+	sessions, _ := s.db.ListActiveSessions(c.Context(), tenantID)
+
+	c.Set("Content-Type", "application/json")
+	return c.JSON(map[string]interface{}{
+		"tenant_id":       tenantID,
+		"name":            t.Name,
+		"pms_connected":   pmsConnected,
+		"pbx_connected":   pbxConnected,
+		"enabled":         t.Enabled,
+		"room_count":      len(rooms),
+		"active_sessions": len(sessions),
+	})
+}
+
+func parsePositiveInt(s string) int {
+	if s == "" {
+		return 0
+	}
+	var n int
+	for _, c := range s {
+		if c < '0' || c > '9' {
+			return 0
+		}
+		n = n*10 + int(c-'0')
+	}
+	return n
+}
+
 type importRequest struct {
 	Tenants []createTenantRequest `json:"tenants"`
 }

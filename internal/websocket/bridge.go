@@ -149,18 +149,18 @@ type CloudMessage struct {
 // Bridge maintains a persistent WebSocket connection to the cloud platform
 // and forwards PMS events with tenant routing.
 type Bridge struct {
-	cfg        Config
-	tenantID   string
-	events     <-chan pms.Event
-	conn       *websocket.Conn
-	mu         sync.RWMutex
-	closed     bool
-	done       chan struct{}
-	reconnect  chan struct{}
-	wg         sync.WaitGroup
+	cfg       Config
+	tenantID  string
+	events    <-chan pms.Event
+	conn      *websocket.Conn
+	mu        sync.RWMutex
+	closed    bool
+	done      chan struct{}
+	reconnect chan struct{}
+	wg        sync.WaitGroup
 
 	// Reconnection state
-	reconnectAttempts  int
+	reconnectAttempts int
 	nextReconnectTime time.Time
 
 	// Metrics
@@ -175,11 +175,11 @@ func NewBridge(cfg Config, tenantID string, events <-chan pms.Event) (*Bridge, e
 	}
 
 	return &Bridge{
-		cfg:        cfg,
-		tenantID:   tenantID,
-		events:     events,
-		done:       make(chan struct{}),
-		reconnect:  make(chan struct{}, 1),
+		cfg:       cfg,
+		tenantID:  tenantID,
+		events:    events,
+		done:      make(chan struct{}),
+		reconnect: make(chan struct{}, 1),
 	}, nil
 }
 
@@ -468,9 +468,16 @@ func (b *Bridge) SendEvent(ctx context.Context, event pms.Event) error {
 
 	conn.SetWriteDeadline(time.Now().Add(b.cfg.WriteTimeout))
 	if err := conn.WriteMessage(websocket.TextMessage, data); err != nil {
+		log.Error().Err(err).Str("tenant", b.tenantID).Msg("Failed to write message to WebSocket")
 		b.handleDisconnect()
 		return fmt.Errorf("write message: %w", err)
 	}
+
+	log.Debug().
+		Str("tenant", b.tenantID).
+		Str("event", event.Type.String()).
+		Str("room", event.Room).
+		Msg("Event sent to cloud")
 
 	metrics.WebSocketEventsSent.WithLabelValues(b.tenantID, event.Type.String()).Inc()
 	return nil
@@ -532,9 +539,9 @@ func (b *Bridge) Status() BridgeStatus {
 
 // BridgeStatus represents the current state of the WebSocket bridge
 type BridgeStatus struct {
-	TenantID          string     `json:"tenant_id"`
-	Connected         bool       `json:"connected"`
-	ReconnectAttempts int        `json:"reconnect_attempts"`
-	NextReconnectTime time.Time  `json:"next_reconnect_time,omitempty"`
-	LastConnectedAt   time.Time  `json:"last_connected_at,omitempty"`
+	TenantID          string    `json:"tenant_id"`
+	Connected         bool      `json:"connected"`
+	ReconnectAttempts int       `json:"reconnect_attempts"`
+	NextReconnectTime time.Time `json:"next_reconnect_time,omitempty"`
+	LastConnectedAt   time.Time `json:"last_connected_at,omitempty"`
 }

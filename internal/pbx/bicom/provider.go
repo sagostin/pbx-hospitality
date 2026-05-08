@@ -36,7 +36,7 @@ func init() {
 			ARIUser:       cfg.ARIUser,
 			ARIPass:       cfg.ARIPass,
 			ARIAppName:    cfg.ARIAppName,
-		WebhookSecret: cfg.WebhookSecret,
+			WebhookSecret: cfg.WebhookSecret,
 		})
 	})
 }
@@ -76,9 +76,9 @@ type Provider struct {
 	eventSub ari.Subscription
 
 	// Reconnection handling
-	reconnectMu   sync.Mutex
-	reconnecting  bool
-	reconnectWg   sync.WaitGroup
+	reconnectMu  sync.Mutex
+	reconnecting bool
+	reconnectWg  sync.WaitGroup
 
 	// Access code pattern (e.g., *411)
 	accessCodePattern *regexp.Regexp
@@ -183,6 +183,7 @@ func (p *Provider) Close() error {
 	// Close event channel
 	close(p.events)
 
+	log.Info().Msg("Bicom provider closed")
 	return nil
 }
 
@@ -199,8 +200,8 @@ func (p *Provider) Capabilities() pbx.Capabilities {
 		SupportsWakeUpCalls:       p.apiClient != nil,
 		SupportsVoicemailGreeting: p.apiClient != nil,
 		SupportsCallForward:       p.apiClient != nil,
-		SupportsMWI:               true, // via ARI or API
-		SupportsDND:               true, // via ARI or API
+		SupportsMWI:               true,               // via ARI or API
+		SupportsDND:               true,               // via ARI or API
 		SupportsInboundEvents:     p.cfg.ARIURL != "", // via ARI WebSocket or HTTP webhook
 	}
 }
@@ -232,6 +233,7 @@ func (p *Provider) DeleteAllVoicemails(ctx context.Context, ext string) error {
 	if p.apiClient != nil {
 		return p.apiClient.DeleteAllVoicemails(ctx, ext)
 	}
+	log.Warn().Str("extension", ext).Msg("Cannot delete voicemails: Bicom API not configured")
 	return fmt.Errorf("Bicom API not configured")
 }
 
@@ -240,6 +242,7 @@ func (p *Provider) ResetVoicemailGreeting(ctx context.Context, ext string) error
 	if p.apiClient != nil {
 		return p.apiClient.ResetVoicemailGreeting(ctx, ext)
 	}
+	log.Warn().Str("extension", ext).Msg("Cannot reset voicemail greeting: Bicom API not configured")
 	return fmt.Errorf("Bicom API not configured")
 }
 
@@ -248,6 +251,7 @@ func (p *Provider) ClearVoicemailForGuest(ctx context.Context, ext string) error
 	if p.apiClient != nil {
 		return p.apiClient.ClearVoicemailForGuest(ctx, ext)
 	}
+	log.Warn().Str("extension", ext).Msg("Cannot clear voicemail for guest: Bicom API not configured")
 	return fmt.Errorf("Bicom API not configured")
 }
 
@@ -261,6 +265,7 @@ func (p *Provider) SetMWI(ctx context.Context, ext string, on bool) error {
 	defer p.ariMu.RUnlock()
 
 	if p.ariClient == nil {
+		log.Error().Str("extension", ext).Msg("Cannot set MWI: ARI not connected")
 		return fmt.Errorf("ARI not connected")
 	}
 
@@ -623,9 +628,9 @@ func (p *Provider) handleStasisEnd(event *ari.StasisEnd) {
 	}
 
 	ce := pbx.CallEvent{
-		Type:       pbx.CallEventCallEnded,
-		CallerID:   callerID,
-		Timestamp:  time.Now(),
+		Type:      pbx.CallEventCallEnded,
+		CallerID:  callerID,
+		Timestamp: time.Now(),
 		Metadata: map[string]string{
 			"channel_id": event.Channel.ID,
 		},

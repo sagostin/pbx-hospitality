@@ -16,7 +16,7 @@ import (
 	"github.com/sagostin/pbx-hospitality/internal/db"
 	"github.com/sagostin/pbx-hospitality/internal/metrics"
 	"github.com/sagostin/pbx-hospitality/internal/pbx"
-	_ "github.com/sagostin/pbx-hospitality/internal/pbx/bicom" // Register Bicom provider
+	_ "github.com/sagostin/pbx-hospitality/internal/pbx/bicom"  // Register Bicom provider
 	_ "github.com/sagostin/pbx-hospitality/internal/pbx/zultys" // Register Zultys provider
 	"github.com/sagostin/pbx-hospitality/internal/pms"
 	"github.com/sagostin/pbx-hospitality/internal/pms/tigertms"
@@ -386,17 +386,17 @@ func (m *Manager) UpdateTenantRuntime(tc config.TenantConfig) error {
 
 // Tenant represents a single hotel/property integration
 type Tenant struct {
-	ID           string
-	Name         string
-	cfg          config.TenantConfig
-	database     *db.DB
+	ID          string
+	Name        string
+	cfg         config.TenantConfig
+	database    *db.DB
 	pmsAdapter  pms.Adapter
 	pbxProvider pbx.Provider // PBX provider (Bicom, FreeSWITCH, etc.)
 	mapper      *RoomMapper
 	timezone    *time.Location // Tenant's configured timezone
 	cancel      context.CancelFunc
-	wg           sync.WaitGroup
-	reconnects   int // Number of reconnection attempts
+	wg          sync.WaitGroup
+	reconnects  int // Number of reconnection attempts
 }
 
 // NewTenant creates a new tenant instance
@@ -428,6 +428,8 @@ func NewTenant(cfg config.TenantConfig, database *db.DB) (*Tenant, error) {
 func (t *Tenant) Start(ctx context.Context) error {
 	ctx, t.cancel = context.WithCancel(ctx)
 
+	log.Info().Str("tenant", t.ID).Msg("Starting tenant")
+
 	// Initialize PMS adapter
 	var adapterOpts []pms.AdapterOption
 	if t.cfg.PMS.Protocol == "tigertms" && t.cfg.PMS.AuthToken != "" {
@@ -435,14 +437,18 @@ func (t *Tenant) Start(ctx context.Context) error {
 	}
 	adapter, err := pms.NewAdapter(t.cfg.PMS.Protocol, t.cfg.PMS.Host, t.cfg.PMS.Port, adapterOpts...)
 	if err != nil {
+		log.Error().Err(err).Str("tenant", t.ID).Msg("Failed to create PMS adapter")
 		return err
 	}
 	t.pmsAdapter = adapter
 
 	// Connect to PMS
+	log.Info().Str("tenant", t.ID).Str("protocol", t.cfg.PMS.Protocol).Msg("Connecting to PMS")
 	if err := t.pmsAdapter.Connect(ctx); err != nil {
+		log.Error().Err(err).Str("tenant", t.ID).Msg("Failed to connect to PMS")
 		return err
 	}
+	log.Info().Str("tenant", t.ID).Msg("PMS connected")
 
 	// Initialize PBX provider using registry
 	pbxType := t.cfg.PBX.Type
@@ -470,11 +476,14 @@ func (t *Tenant) Start(ctx context.Context) error {
 		WebhookSecret: t.cfg.PBX.WebhookSecret,
 	})
 	if err != nil {
+		log.Error().Err(err).Str("tenant", t.ID).Str("pbx_type", pbxType).Msg("Failed to create PBX provider")
 		return fmt.Errorf("creating PBX provider (%s): %w", pbxType, err)
 	}
 
 	// Connect to PBX
+	log.Info().Str("tenant", t.ID).Str("pbx_type", pbxType).Msg("Connecting to PBX")
 	if err := t.pbxProvider.Connect(ctx); err != nil {
+		log.Error().Err(err).Str("tenant", t.ID).Msg("Failed to connect to PBX")
 		return fmt.Errorf("connecting to PBX: %w", err)
 	}
 
@@ -496,6 +505,8 @@ func (t *Tenant) Start(ctx context.Context) error {
 
 // Stop terminates the tenant services
 func (t *Tenant) Stop() {
+	log.Info().Str("tenant", t.ID).Msg("Stopping tenant")
+
 	if t.cancel != nil {
 		t.cancel()
 	}
@@ -513,11 +524,15 @@ func (t *Tenant) Stop() {
 	metrics.ConnectorCloudConnected.WithLabelValues(t.ID).Set(0)
 
 	t.wg.Wait()
+
+	log.Info().Str("tenant", t.ID).Msg("Tenant stopped")
 }
 
 // processEvents handles incoming PMS and PBX events
 func (t *Tenant) processEvents(ctx context.Context) {
 	defer t.wg.Done()
+
+	log.Debug().Str("tenant", t.ID).Msg("Tenant event processing started")
 
 	// Check if PBX provider implements EventProvider (e.g., Zultys webhooks)
 	var pbxEvents <-chan pbx.CallEvent
@@ -779,19 +794,19 @@ func (t *Tenant) PBXProvider() pbx.Provider {
 // Status returns the tenant's current status
 func (t *Tenant) Status() TenantStatus {
 	return TenantStatus{
-		ID:              t.ID,
-		Name:            t.Name,
-		PMSConnected:    t.pmsAdapter != nil && t.pmsAdapter.Connected(),
-		PBXConnected:    t.pbxProvider != nil && t.pbxProvider.Connected(),
-		ReconnectCount:  t.reconnects,
+		ID:             t.ID,
+		Name:           t.Name,
+		PMSConnected:   t.pmsAdapter != nil && t.pmsAdapter.Connected(),
+		PBXConnected:   t.pbxProvider != nil && t.pbxProvider.Connected(),
+		ReconnectCount: t.reconnects,
 	}
 }
 
 // TenantStatus represents the current state of a tenant
 type TenantStatus struct {
-	ID              string `json:"id"`
-	Name            string `json:"name"`
+	ID             string `json:"id"`
+	Name           string `json:"name"`
 	PMSConnected   bool   `json:"pms_connected"`
-	PBXConnected    bool   `json:"pbx_connected"`
-	ReconnectCount  int    `json:"reconnect_count"`
+	PBXConnected   bool   `json:"pbx_connected"`
+	ReconnectCount int    `json:"reconnect_count"`
 }

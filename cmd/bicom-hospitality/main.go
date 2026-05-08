@@ -7,16 +7,15 @@ import (
 	"net/http"
 	"os"
 	"os/signal"
-	"path/filepath"
 	"syscall"
 	"time"
 
-	"github.com/rs/zerolog"
 	"github.com/rs/zerolog/log"
 
 	"github.com/sagostin/pbx-hospitality/internal/api"
 	"github.com/sagostin/pbx-hospitality/internal/config"
 	"github.com/sagostin/pbx-hospitality/internal/db"
+	"github.com/sagostin/pbx-hospitality/internal/logging"
 	"github.com/sagostin/pbx-hospitality/internal/pbx"
 	"github.com/sagostin/pbx-hospitality/internal/tenant"
 )
@@ -26,37 +25,20 @@ func main() {
 	healthCheck := flag.Bool("health-check", false, "Run health check and exit (for Docker HEALTHCHECK)")
 	flag.Parse()
 
-	// Configure zerolog
-	zerolog.TimeFieldFormat = zerolog.TimeFormatUnix
+	// Load configuration first (needed for logging init)
+	cfg, err := config.Load()
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "Failed to load configuration: %v\n", err)
+		os.Exit(1)
+	}
 
-	// Configure logging output
-	logDir := os.Getenv("LOG_DIR")
-	if logDir != "" {
-		// Ensure log directory exists
-		if err := os.MkdirAll(logDir, 0755); err != nil {
-			log.Fatal().Err(err).Str("log_dir", logDir).Msg("Failed to create log directory")
-		}
-		// Open log file with rotation
-		logFile := filepath.Join(logDir, "hospitality.log")
-		f, err := os.OpenFile(logFile, os.O_CREATE|os.O_APPEND|os.O_WRONLY, 0644)
-		if err != nil {
-			log.Fatal().Err(err).Str("log_file", logFile).Msg("Failed to open log file")
-		}
-		defer f.Close()
-		// Write JSON logs to file; console writer to stderr
-		log.Logger = zerolog.New(f).With().Timestamp().Logger()
-	} else {
-		// Default: console output to stderr
-		log.Logger = log.Output(zerolog.ConsoleWriter{Out: os.Stderr, TimeFormat: time.RFC3339})
+	// Initialize logging with Loki support
+	if err := logging.Init(cfg.Logging); err != nil {
+		fmt.Fprintf(os.Stderr, "Failed to initialize logging: %v\n", err)
+		os.Exit(1)
 	}
 
 	log.Info().Msg("Starting Bicom Hospitality PMS Integration")
-
-	// Load configuration
-	cfg, err := config.Load()
-	if err != nil {
-		log.Fatal().Err(err).Msg("Failed to load configuration")
-	}
 
 	// If running health check, validate and exit
 	if *healthCheck {

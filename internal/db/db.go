@@ -34,7 +34,7 @@ type DB struct {
 
 func New(ctx context.Context, cfg Config) (*DB, error) {
 	gormConfig := &gorm.Config{
-		Logger: logger.Default.LogMode(logger.Silent),
+		Logger: logger.Default.LogMode(logger.Info),
 	}
 
 	db, err := gorm.Open(postgres.Open(cfg.DSN()), gormConfig)
@@ -50,6 +50,14 @@ func New(ctx context.Context, cfg Config) (*DB, error) {
 	sqlDB.SetMaxOpenConns(10)
 	sqlDB.SetMaxIdleConns(2)
 	sqlDB.SetConnMaxLifetime(30 * time.Minute)
+
+	log.Info().
+		Str("host", cfg.Host).
+		Int("port", cfg.Port).
+		Str("database", cfg.Database).
+		Int("max_open_conns", 10).
+		Int("max_idle_conns", 2).
+		Msg("Database connection pool configured")
 
 	if err := sqlDB.Ping(); err != nil {
 		return nil, fmt.Errorf("pinging database: %w", err)
@@ -377,6 +385,78 @@ func (db *DB) UpsertRoomMapping(ctx context.Context, tenantID, roomNumber, exten
 			extension = EXCLUDED.extension,
 			updated_at = NOW()
 	`, tenantID, roomNumber, extension).Error
+}
+
+func (db *DB) DeleteRoomMapping(ctx context.Context, tenantID, roomNumber string) error {
+	result := db.DB.WithContext(ctx).Delete(&RoomMapping{}, "tenant_id = ? AND room_number = ?", tenantID, roomNumber)
+	if result.Error != nil {
+		return fmt.Errorf("deleting room mapping: %w", result.Error)
+	}
+	if result.RowsAffected == 0 {
+		return fmt.Errorf("room mapping not found")
+	}
+	return nil
+}
+
+func (db *DB) ListAllGuestSessions(ctx context.Context, tenantID string) ([]GuestSession, error) {
+	var sessions []GuestSession
+	if err := db.DB.WithContext(ctx).Where("tenant_id = ?", tenantID).Order("room_number, check_in DESC").Find(&sessions).Error; err != nil {
+		return nil, fmt.Errorf("querying guest sessions: %w", err)
+	}
+	return sessions, nil
+}
+
+func (db *DB) GetGuestSessionByRoom(ctx context.Context, tenantID, roomNumber string) (*GuestSession, error) {
+	var gs GuestSession
+	if err := db.DB.WithContext(ctx).Where("tenant_id = ? AND room_number = ?", tenantID, roomNumber).Order("check_in DESC").First(&gs).Error; err != nil {
+		if err == gorm.ErrRecordNotFound {
+			return nil, nil
+		}
+		return nil, fmt.Errorf("querying guest session: %w", err)
+	}
+	return &gs, nil
+}
+
+func (db *DB) DeleteGuestSession(ctx context.Context, tenantID, roomNumber string) error {
+	result := db.DB.WithContext(ctx).Delete(&GuestSession{}, "tenant_id = ? AND room_number = ?", tenantID, roomNumber)
+	if result.Error != nil {
+		return fmt.Errorf("deleting guest session: %w", result.Error)
+	}
+	return nil
+}
+
+func (db *DB) ListPMSEvents(ctx context.Context, tenantID string, processed *bool, limit, offset int) ([]PMSEvent, error) {
+	query := db.DB.WithContext(ctx).Where("tenant_id = ?", tenantID)
+	if processed != nil {
+		query = query.Where("processed = ?", *processed)
+	}
+	var events []PMSEvent
+	if err := query.Order("created_at DESC").Limit(limit).Offset(offset).Find(&events).Error; err != nil {
+		return nil, fmt.Errorf("querying PMS events: %w", err)
+	}
+	return events, nil
+}
+
+func (db *DB) GetPMSEvent(ctx context.Context, tenantID string, eventID int64) (*PMSEvent, error) {
+	var event PMSEvent
+	if err := db.DB.WithContext(ctx).First(&event, "id = ? AND tenant_id = ?", eventID, tenantID).Error; err != nil {
+		if err == gorm.ErrRecordNotFound {
+			return nil, nil
+		}
+		return nil, fmt.Errorf("querying PMS event: %w", err)
+	}
+	return &event, nil
+}
+
+func (db *DB) DeletePMSEvent(ctx context.Context, eventID int64) error {
+	if err := db.DB.WithContext(ctx).Delete(&PMSEvent{}, "id = ?", eventID).Error; err != nil {
+		return fmt.Errorf("deleting PMS event: %w", err)
+	}
+	return nil
+}
+
+func (db *DB) ResetPMSEvent(ctx context.Context, eventID int64) error {
+	return db.DB.WithContext(ctx).Exec("UPDATE pms_events SET processed = FALSE, error = NULL WHERE id = ?", eventID).Error
 }
 
 func (db *DB) CreateGuestSession(ctx context.Context, tenantID, roomNumber, extension, guestName, reservationID string, metadata map[string]interface{}) (int, error) {

@@ -181,11 +181,42 @@ CREATE TABLE tenants (
 **Admin API for Tenant Management:**
 | Method | Endpoint | Description |
 |--------|----------|-------------|
-| `GET` | `/api/v1/tenants` | List all tenants |
-| `POST` | `/api/v1/tenants` | Create tenant |
-| `GET` | `/api/v1/tenants/{id}` | Get tenant details |
-| `PUT` | `/api/v1/tenants/{id}` | Update tenant |
-| `DELETE` | `/api/v1/tenants/{id}` | Remove tenant |
+| `GET` | `/admin/tenants` | List all tenants |
+| `POST` | `/admin/tenants` | Create tenant |
+| `GET` | `/admin/tenants/{id}` | Get tenant details |
+| `PUT` | `/admin/tenants/{id}` | Update tenant |
+| `DELETE` | `/admin/tenants/{id}` | Remove tenant |
+| `POST` | `/admin/tenants/import` | Bulk import tenants |
+
+**Admin API for Site Management:**
+| Method | Endpoint | Description |
+|--------|----------|-------------|
+| `GET` | `/admin/sites` | List all sites |
+| `POST` | `/admin/sites` | Create site |
+| `GET` | `/admin/sites/{id}` | Get site details |
+| `PUT` | `/admin/sites/{id}` | Update site |
+| `DELETE` | `/admin/sites/{id}` | Remove site |
+| `GET` | `/admin/sites/{id}/health` | Get site health |
+| `GET` | `/admin/sites/{id}/bicom` | List site PBX mappings |
+| `POST` | `/admin/sites/{id}/bicom` | Add PBX to site |
+| `DELETE` | `/admin/sites/{id}/bicom/{bicomSystemId}` | Remove PBX from site |
+
+**Admin API for Bicom Systems:**
+| Method | Endpoint | Description |
+|--------|----------|-------------|
+| `GET` | `/admin/bicom-systems` | List all PBX systems |
+| `POST` | `/admin/bicom-systems` | Create PBX system |
+| `GET` | `/admin/bicom-systems/{id}` | Get PBX details |
+| `PUT` | `/admin/bicom-systems/{id}` | Update PBX system |
+| `DELETE` | `/admin/bicom-systems/{id}` | Remove PBX system |
+| `PUT` | `/admin/bicom-systems/{id}/ari-secret` | Update ARI password |
+
+**Admin API for PBX Management:**
+| Method | Endpoint | Description |
+|--------|----------|-------------|
+| `GET` | `/admin/pbx/status` | List PBX connection status |
+| `POST` | `/admin/pbx/reload` | Reload all PBX systems |
+| `POST` | `/admin/pbx/{id}/reload` | Reload specific PBX system |
 
 ---
 
@@ -406,21 +437,17 @@ func (s *Service) subscribeEvents(client ari.Client) {
 
 ## REST API
 
-Administrative and monitoring endpoints:
+Public monitoring endpoints:
 
 | Method | Endpoint | Description |
 |--------|----------|-------------|
-| `GET` | `/api/v1/tenants` | List all tenants |
-| `POST` | `/api/v1/tenants` | Create tenant |
-| `GET` | `/api/v1/tenants/{id}` | Get tenant details |
-| `PUT` | `/api/v1/tenants/{id}` | Update tenant |
-| `DELETE` | `/api/v1/tenants/{id}` | Remove tenant |
 | `GET` | `/api/v1/tenants/{id}/rooms` | List room mappings |
-| `POST` | `/api/v1/tenants/{id}/rooms` | Create room mapping |
 | `GET` | `/api/v1/tenants/{id}/sessions` | Active guest sessions |
 | `GET` | `/api/v1/tenants/{id}/events` | Recent PMS events |
 | `GET` | `/health` | Health check |
 | `GET` | `/metrics` | Prometheus metrics |
+
+For admin API endpoints, see [Admin API Reference](admin-api.md).
 
 ---
 

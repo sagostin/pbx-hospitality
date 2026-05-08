@@ -179,11 +179,13 @@ func (p *Provider) fetchSession(ctx context.Context) (*Session, error) {
 
 	resp, err := p.client.Do(req)
 	if err != nil {
+		log.Error().Err(err).Msg("Zultys auth request failed")
 		return nil, fmt.Errorf("auth request failed: %w", err)
 	}
 	defer resp.Body.Close()
 
 	if resp.StatusCode != http.StatusOK {
+		log.Error().Int("status", resp.StatusCode).Msg("Zultys auth failed")
 		return nil, fmt.Errorf("auth failed with status %d", resp.StatusCode)
 	}
 
@@ -219,6 +221,7 @@ func (p *Provider) fetchSession(ctx context.Context) (*Session, error) {
 func (p *Provider) doRequest(ctx context.Context, method, path string, payload interface{}) (*http.Response, error) {
 	session, err := p.getSession(ctx)
 	if err != nil {
+		log.Error().Err(err).Str("path", path).Msg("Zultys API request failed: session error")
 		return nil, fmt.Errorf("getting session: %w", err)
 	}
 
@@ -240,12 +243,14 @@ func (p *Provider) doRequest(ctx context.Context, method, path string, payload i
 
 	resp, err := p.client.Do(req)
 	if err != nil {
+		log.Error().Err(err).Str("path", path).Msg("Zultys API request failed")
 		return nil, err
 	}
 
 	// If unauthorized, clear session and retry once
 	if resp.StatusCode == http.StatusUnauthorized {
 		resp.Body.Close()
+		log.Warn().Msg("Zultys session expired, re-authenticating")
 		p.sessionMu.Lock()
 		p.session = nil
 		p.sessionMu.Unlock()

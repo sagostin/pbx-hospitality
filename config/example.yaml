@@ -18,3 +18,11 @@ crypto:
 logging:
   level: "info"
   format: "json"
+  loki_enabled: true
+  loki_url: "${LOKI_ENDPOINT}"
+  loki_batch_size: 100
+  loki_batch_wait: 5
+  websocket_logs:
+    enabled: true
+    path: "/ws/logs"
+    auth_token: "${SERVICE_NAME}"
