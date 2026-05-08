@@ -11,6 +11,7 @@ services:
       DB_NAME: hospitality
       DB_SSL_MODE: disable
       ADMIN_API_KEY: ${ADMIN_API_KEY:-}
+      ENCRYPTION_MASTER_KEY: ${ENCRYPTION_MASTER_KEY:-}
     ports:
       - "8080:8080"
     depends_on:
