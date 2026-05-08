@@ -62,6 +62,8 @@ tenants:
 ```bash
 cat > .env <<EOF
 DB_PASSWORD=secure_password_here
+# Encryption (required for ARI password storage)
+ENCRYPTION_MASTER_KEY=$(openssl rand -base64 32)
 # Bicom PBX
 ARI_PASSWORD=your_ari_password
 BICOM_API_KEY=your_api_key_from_pbxware
@@ -71,6 +73,12 @@ ZULTYS_PASSWORD=your_zultys_password
 ZULTYS_WEBHOOK_SECRET=random_secret_for_webhooks
 EOF
 ```
+
+> **Important**: The `ENCRYPTION_MASTER_KEY` must be a 32-byte value encoded as base64. Generate one with:
+> ```bash
+> openssl rand -base64 32
+> ```
+> The service will fail to start without this key.
 
 ### 4. Start Services
 
@@ -425,10 +433,11 @@ ERROR Failed to map room to extension
 ## Security
 
 1. **TLS**: Use reverse proxy (nginx/traefik) for HTTPS
-2. **Secrets**: Store passwords in environment variables or Vault
-3. **Network**: Isolate PMS connections on dedicated VLAN
-4. **Firewall**: Restrict API access to internal networks
-5. **Audit**: All PMS events logged to database
+2. **Encryption Key**: `ENCRYPTION_MASTER_KEY` must be set - generate with `openssl rand -base64 32`
+3. **Secrets**: Store passwords in environment variables or Vault
+4. **Network**: Isolate PMS connections on dedicated VLAN
+5. **Firewall**: Restrict API access to internal networks
+6. **Audit**: All PMS events logged to database
 
 ---
 
