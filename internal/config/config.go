@@ -3,6 +3,7 @@ package config
 import (
 	"fmt"
 	"os"
+	"strconv"
 
 	"gopkg.in/yaml.v3"
 )
@@ -209,6 +210,35 @@ func Load() (*Config, error) {
 	}
 	if serviceName := os.Getenv("SERVICE_NAME"); serviceName != "" {
 		cfg.Logging.WebSocketLogs.AuthToken = serviceName
+	}
+
+	// Override database config from environment variables
+	if dbHost := os.Getenv("DB_HOST"); dbHost != "" {
+		cfg.Database.Host = dbHost
+	}
+	if dbPort := os.Getenv("DB_PORT"); dbPort != "" {
+		if port, err := strconv.Atoi(dbPort); err == nil {
+			cfg.Database.Port = port
+		}
+	}
+	if dbUser := os.Getenv("DB_USER"); dbUser != "" {
+		cfg.Database.User = dbUser
+	}
+	if dbPass := os.Getenv("DB_PASSWORD"); dbPass != "" {
+		cfg.Database.Password = dbPass
+	}
+	if dbName := os.Getenv("DB_NAME"); dbName != "" {
+		cfg.Database.Database = dbName
+	}
+	if dbSSL := os.Getenv("DB_SSL_MODE"); dbSSL != "" {
+		cfg.Database.SSLMode = dbSSL
+	}
+
+	// Override server config from environment variables
+	if serverPort := os.Getenv("SERVER_PORT"); serverPort != "" {
+		if port, err := strconv.Atoi(serverPort); err == nil {
+			cfg.Server.Port = port
+		}
 	}
 
 	return &cfg, nil

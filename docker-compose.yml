@@ -4,12 +4,14 @@ services:
   hospitality:
     build: .
     environment:
-      CONFIG_PATH: /config/config.yaml
+      DB_HOST: db
+      DB_PORT: 5432
+      DB_USER: hospitality
       DB_PASSWORD: ${DB_PASSWORD:-hospitality}
+      DB_NAME: hospitality
+      DB_SSL_MODE: disable
     ports:
       - "8080:8080"
-    volumes:
-      - ./config:/config:ro
     depends_on:
       db:
         condition: service_healthy
