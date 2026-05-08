@@ -14,6 +14,7 @@ import (
 
 	"github.com/sagostin/pbx-hospitality/internal/api"
 	"github.com/sagostin/pbx-hospitality/internal/config"
+	"github.com/sagostin/pbx-hospitality/internal/crypto"
 	"github.com/sagostin/pbx-hospitality/internal/db"
 	"github.com/sagostin/pbx-hospitality/internal/logging"
 	"github.com/sagostin/pbx-hospitality/internal/pbx"
@@ -39,6 +40,12 @@ func main() {
 	}
 
 	log.Info().Msg("Starting Bicom Hospitality PMS Integration")
+
+	// Initialize crypto (required for ARI password encryption)
+	if err := crypto.Init(); err != nil {
+		fmt.Fprintf(os.Stderr, "Failed to initialize crypto: %v\n", err)
+		os.Exit(1)
+	}
 
 	// If running health check, validate and exit
 	if *healthCheck {
