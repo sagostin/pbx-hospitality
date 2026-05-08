@@ -23,18 +23,20 @@ import (
 
 type Server struct {
 	tm               *tenant.Manager
+	pbxMgr           *pbx.Manager
 	cfg              *config.Config
 	db               *db.DB
 	tigertmsHandlers map[*fiber.App]string
 }
 
-func NewRouter(tm *tenant.Manager, cfg *config.Config) http.Handler {
-	return NewRouterWithDB(tm, cfg, nil)
+func NewRouter(tm *tenant.Manager, pbxMgr *pbx.Manager, cfg *config.Config) http.Handler {
+	return NewRouterWithDB(tm, pbxMgr, cfg, nil)
 }
 
-func NewRouterWithDB(tm *tenant.Manager, cfg *config.Config, database *db.DB) http.Handler {
+func NewRouterWithDB(tm *tenant.Manager, pbxMgr *pbx.Manager, cfg *config.Config, database *db.DB) http.Handler {
 	s := &Server{
 		tm:               tm,
+		pbxMgr:           pbxMgr,
 		cfg:              cfg,
 		db:               database,
 		tigertmsHandlers: make(map[*fiber.App]string),
@@ -51,7 +53,7 @@ func NewRouterWithDB(tm *tenant.Manager, cfg *config.Config, database *db.DB) ht
 
 	app.Get("/metrics", adaptor.HTTPHandler(promhttp.Handler()))
 
-	admin := &AdminServer{Server: s}
+	admin := &AdminServer{Server: s, pbxManager: pbxMgr}
 	adminGroup := app.Group("/admin/tenants")
 	adminGroup.Use(adminKeyMiddleware(cfg.Server.AdminAPIKey))
 	adminGroup.Get("/", admin.listTenants)
@@ -80,6 +82,13 @@ func NewRouterWithDB(tm *tenant.Manager, cfg *config.Config, database *db.DB) ht
 	adminBicomGroup.Post("/", admin.createBicomSystem)
 	adminBicomGroup.Put("/:id", admin.updateBicomSystem)
 	adminBicomGroup.Delete("/:id", admin.deleteBicomSystem)
+	adminBicomGroup.Put("/:id/ari-secret", admin.updateBicomSystemARISecret)
+
+	adminPBXGroup := app.Group("/admin/pbx")
+	adminPBXGroup.Use(adminKeyMiddleware(cfg.Server.AdminAPIKey))
+	adminPBXGroup.Get("/status", admin.listPBXStatus)
+	adminPBXGroup.Post("/reload", admin.reloadAllPBX)
+	adminPBXGroup.Post("/:id/reload", admin.reloadPBXSystem)
 
 	apiV1 := app.Group("/api/v1")
 	tenants := apiV1.Group("/tenants")
@@ -334,11 +343,11 @@ func (s *Server) getSession(c *fiber.Ctx) error {
 }
 
 type createSessionRequest struct {
-	RoomNumber     string                 `json:"room_number"`
-	Extension      string                 `json:"extension"`
-	GuestName      string                 `json:"guest_name"`
-	ReservationID  string                 `json:"reservation_id"`
-	Metadata       map[string]interface{} `json:"metadata"`
+	RoomNumber    string                 `json:"room_number"`
+	Extension     string                 `json:"extension"`
+	GuestName     string                 `json:"guest_name"`
+	ReservationID string                 `json:"reservation_id"`
+	Metadata      map[string]interface{} `json:"metadata"`
 }
 
 func (s *Server) createSession(c *fiber.Ctx) error {

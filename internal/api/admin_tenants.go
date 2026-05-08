@@ -9,10 +9,12 @@ import (
 	"github.com/rs/zerolog/log"
 
 	"github.com/sagostin/pbx-hospitality/internal/db"
+	"github.com/sagostin/pbx-hospitality/internal/pbx"
 )
 
 type AdminServer struct {
 	*Server
+	pbxManager *pbx.Manager
 }
 
 func adminKeyMiddleware(adminKey string) fiber.Handler {

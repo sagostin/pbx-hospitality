@@ -17,6 +17,7 @@ import (
 	"github.com/sagostin/pbx-hospitality/internal/api"
 	"github.com/sagostin/pbx-hospitality/internal/config"
 	"github.com/sagostin/pbx-hospitality/internal/db"
+	"github.com/sagostin/pbx-hospitality/internal/pbx"
 	"github.com/sagostin/pbx-hospitality/internal/tenant"
 )
 
@@ -95,6 +96,14 @@ func main() {
 		log.Fatal().Err(err).Msg("Failed to initialize tenant manager")
 	}
 
+	// Initialize PBX manager
+	pbxMgr := pbx.NewManager(database)
+	if database != nil {
+		if err := pbxMgr.LoadFromDB(ctx); err != nil {
+			log.Error().Err(err).Msg("Failed to load PBX systems from database")
+		}
+	}
+
 	// Load tenants from database
 	if err := tm.LoadFromDB(ctx); err != nil {
 		log.Fatal().Err(err).Msg("Failed to load tenants from database")
@@ -108,9 +117,9 @@ func main() {
 	// Initialize HTTP API
 	var router http.Handler
 	if database != nil {
-		router = api.NewRouterWithDB(tm, cfg, database)
+		router = api.NewRouterWithDB(tm, pbxMgr, cfg, database)
 	} else {
-		router = api.NewRouter(tm, cfg)
+		router = api.NewRouter(tm, pbxMgr, cfg)
 	}
 	server := &http.Server{
 		Addr:         fmt.Sprintf(":%d", cfg.Server.Port),
@@ -146,6 +155,11 @@ func main() {
 
 	// Stop all tenants
 	tm.StopAll()
+
+	// Stop PBX manager (close all connections)
+	if pbxMgr != nil {
+		pbxMgr.Close()
+	}
 
 	log.Info().Msg("Shutdown complete")
 }

@@ -157,41 +157,45 @@ func TestFieldExtraction(t *testing.T) {
 // TestListenModeDetection tests that listen mode is correctly detected
 func TestListenModeDetection(t *testing.T) {
 	tests := []struct {
-		name      string
-		host      string
-		port      int
+		name       string
+		host       string
+		port       int
 		wantListen bool
 	}{
 		{
-			name:      "connect mode - normal host and port",
-			host:      "pms.example.com",
-			port:      5000,
+			name:       "connect mode - normal host and port",
+			host:       "pms.example.com",
+			port:       5000,
 			wantListen: false,
 		},
 		{
-			name:      "listen mode - empty host",
-			host:      "",
-			port:      5000,
+			name:       "listen mode - empty host",
+			host:       "",
+			port:       5000,
 			wantListen: true,
 		},
 		{
-			name:      "listen mode - negative port",
-			host:      "pms.example.com",
-			port:      -5000,
+			name:       "listen mode - negative port",
+			host:       "pms.example.com",
+			port:       -5000,
 			wantListen: true,
 		},
 		{
-			name:      "listen mode - empty host and negative port",
-			host:      "",
-			port:      -5000,
+			name:       "listen mode - empty host and negative port",
+			host:       "",
+			port:       -5000,
 			wantListen: true,
 		},
 	}
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			adapter, _ := NewAdapter(tt.host, tt.port)
-			if got := adapter.isListenMode(); got != tt.wantListen {
+			adapter, err := NewAdapter(tt.host, tt.port)
+			if err != nil {
+				t.Fatalf("NewAdapter failed: %v", err)
+			}
+			fiasAdapter := adapter.(*Adapter)
+			if got := fiasAdapter.isListenMode(); got != tt.wantListen {
 				t.Errorf("isListenMode() = %v, want %v", got, tt.wantListen)
 			}
 		})
@@ -201,27 +205,31 @@ func TestListenModeDetection(t *testing.T) {
 // TestGetListenPort tests the listen port calculation
 func TestGetListenPort(t *testing.T) {
 	tests := []struct {
-		name         string
-		port         int
-		listenPort   int
-		wantPort     int
+		name       string
+		port       int
+		listenPort int
+		wantPort   int
 	}{
 		{
-			name:       "negative port uses absolute value",
-			port:       -5000,
-			wantPort:   5000,
+			name:     "negative port uses absolute value",
+			port:     -5000,
+			wantPort: 5000,
 		},
 		{
-			name:       "zero port uses default",
-			port:       0,
-			wantPort:   DefaultFiasPort,
+			name:     "zero port uses default",
+			port:     0,
+			wantPort: DefaultFiasPort,
 		},
 	}
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			adapter, _ := NewAdapter("localhost", tt.port)
-			if got := adapter.getListenPort(); got != tt.wantPort {
+			adapter, err := NewAdapter("localhost", tt.port)
+			if err != nil {
+				t.Fatalf("NewAdapter failed: %v", err)
+			}
+			fiasAdapter := adapter.(*Adapter)
+			if got := fiasAdapter.getListenPort(); got != tt.wantPort {
 				t.Errorf("getListenPort() = %v, want %v", got, tt.wantPort)
 			}
 		})
@@ -236,16 +244,20 @@ func TestListenConfigOption(t *testing.T) {
 		AllowedIPs: []string{"192.168.1.100", "192.168.1.101"},
 	}
 
-	adapter, _ := NewAdapter("", -5000, WithListenConfig(cfg))
+	adapter, err := NewAdapter("", -5000, WithListenConfig(cfg))
+	if err != nil {
+		t.Fatalf("NewAdapter failed: %v", err)
+	}
+	fiasAdapter := adapter.(*Adapter)
 
-	if adapter.listenHost != cfg.Host {
-		t.Errorf("listenHost = %q, want %q", adapter.listenHost, cfg.Host)
+	if fiasAdapter.listenHost != cfg.Host {
+		t.Errorf("listenHost = %q, want %q", fiasAdapter.listenHost, cfg.Host)
 	}
-	if adapter.listenPort != cfg.Port {
-		t.Errorf("listenPort = %v, want %v", adapter.listenPort, cfg.Port)
+	if fiasAdapter.listenPort != cfg.Port {
+		t.Errorf("listenPort = %v, want %v", fiasAdapter.listenPort, cfg.Port)
 	}
-	if len(adapter.allowedPMSIPs) != len(cfg.AllowedIPs) {
-		t.Errorf("allowedPMSIPs length = %d, want %d", len(adapter.allowedPMSIPs), len(cfg.AllowedIPs))
+	if len(fiasAdapter.allowedPMSIPs) != len(cfg.AllowedIPs) {
+		t.Errorf("allowedPMSIPs length = %d, want %d", len(fiasAdapter.allowedPMSIPs), len(cfg.AllowedIPs))
 	}
 }
 
@@ -279,8 +291,12 @@ func TestIsIPAllowed(t *testing.T) {
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			adapter, _ := NewAdapter("", -5000, WithListenConfig(ListenConfig{AllowedIPs: tt.allowedIPs}))
-			if got := adapter.isIPAllowed(tt.remoteAddr); got != tt.want {
+			adapter, err := NewAdapter("", -5000, WithListenConfig(ListenConfig{AllowedIPs: tt.allowedIPs}))
+			if err != nil {
+				t.Fatalf("NewAdapter failed: %v", err)
+			}
+			fiasAdapter := adapter.(*Adapter)
+			if got := fiasAdapter.isIPAllowed(tt.remoteAddr); got != tt.want {
 				t.Errorf("isIPAllowed(%q) = %v, want %v", tt.remoteAddr, got, tt.want)
 			}
 		})
@@ -451,7 +467,8 @@ func TestBackwardCompatibility(t *testing.T) {
 		t.Errorf("Protocol() = %q, want %q", adapter.Protocol(), "fias")
 	}
 
-	if adapter.isListenMode() {
+	fiasAdapter := adapter.(*Adapter)
+	if fiasAdapter.isListenMode() {
 		t.Error("Expected connect mode for normal host/port")
 	}
 }

@@ -6,8 +6,6 @@ services:
     environment:
       CONFIG_PATH: /config/config.yaml
       DB_PASSWORD: ${DB_PASSWORD:-hospitality}
-      HOTEL_ALPHA_ARI_SECRET: ${HOTEL_ALPHA_ARI_SECRET:-secret}
-      HOTEL_BETA_ARI_SECRET: ${HOTEL_BETA_ARI_SECRET:-secret}
     ports:
       - "8080:8080"
     volumes:
@@ -33,7 +31,6 @@ services:
       - "5432:5432"
     volumes:
       - pgdata:/var/lib/postgresql/data
-      - ./migrations:/docker-entrypoint-initdb.d:ro
     healthcheck:
       test: [ "CMD-SHELL", "pg_isready -U hospitality -d hospitality" ]
       interval: 10s

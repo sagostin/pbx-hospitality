@@ -149,34 +149,71 @@ func (PMSEvent) TableName() string {
 }
 
 type BicomSystem struct {
-	ID          string    `gorm:"primaryKey;size:64"`
-	Name        string    `gorm:"size:255;not null"`
-	APIURL      string    `gorm:"column:api_url;size:512;not null"`
-	APIKey      string    `gorm:"column:api_key;size:128;not null"`
-	TenantID    string    `gorm:"column:tenant_id;size:64"`
-	ARIURL      string    `gorm:"column:ari_url;size:512"`
-	ARIUser     string    `gorm:"column:ari_user;size:64"`
-	ARIPass     string    `gorm:"column:ari_pass;size:128"`
-	ARIAppName  string    `gorm:"column:ari_app_name;size:64"`
-	WebhookURL  string    `gorm:"column:webhook_url;size:512"`
-	HealthStatus string   `gorm:"column:health_status;size:32;default:'unknown'"`
-	LastHealthCheck time.Time `gorm:"column:last_health_check"`
-	Settings    string    `gorm:"type:jsonb;default:'{}'"`
-	Enabled     bool      `gorm:"default:true"`
-	CreatedAt   time.Time
-	UpdatedAt   time.Time
+	ID               string    `gorm:"primaryKey;size:64"`
+	Name             string    `gorm:"size:255;not null"`
+	APIURL           string    `gorm:"column:api_url;size:512;not null"`
+	APIKey           string    `gorm:"column:api_key;size:128;not null"`
+	TenantID         string    `gorm:"column:tenant_id;size:64"`
+	ARIURL           string    `gorm:"column:ari_url;size:512"`
+	ARIUser          string    `gorm:"column:ari_user;size:64"`
+	ARIPassEncrypted []byte    `gorm:"column:ari_pass_encrypted;type:bytea"` // Encrypted ARI password
+	ARIPassNonce     []byte    `gorm:"column:ari_pass_nonce;type:bytea"`     // Nonce for decryption
+	ARIAppName       string    `gorm:"column:ari_app_name;size:64"`
+	WebhookURL       string    `gorm:"column:webhook_url;size:512"`
+	HealthStatus     string    `gorm:"column:health_status;size:32;default:'unknown'"`
+	LastHealthCheck  time.Time `gorm:"column:last_health_check"`
+	Settings         string    `gorm:"type:jsonb;default:'{}'"`
+	Enabled          bool      `gorm:"default:true"`
+	CreatedAt        time.Time
+	UpdatedAt        time.Time
+
+	// ARIPass is a computed field - plaintext password used for API calls
+	// It is NOT stored directly; instead ARIPassEncrypted and ARIPassNonce are used
+	ARIPass string `gorm:"-"` // Ignored by GORM, used for application-level encryption
 }
 
 func (BicomSystem) TableName() string {
 	return "bicom_systems"
 }
 
+// SetARIPass encrypts and stores the ARI password
+func (s *BicomSystem) SetARIPass(plaintext string) error {
+	if plaintext == "" {
+		s.ARIPassEncrypted = nil
+		s.ARIPassNonce = nil
+		s.ARIPass = ""
+		return nil
+	}
+	ciphertext, nonce, err := crypto.Encrypt([]byte(plaintext))
+	if err != nil {
+		return fmt.Errorf("encrypting ARI password: %w", err)
+	}
+	s.ARIPassEncrypted = ciphertext
+	s.ARIPassNonce = nonce
+	s.ARIPass = plaintext
+	return nil
+}
+
+// GetARIPass decrypts and returns the ARI password
+func (s *BicomSystem) GetARIPass() (string, error) {
+	if len(s.ARIPassEncrypted) == 0 || len(s.ARIPassNonce) == 0 {
+		// Fallback to plaintext field (for migrations/data without encryption)
+		return s.ARIPass, nil
+	}
+	plaintext, err := crypto.Decrypt(s.ARIPassEncrypted, s.ARIPassNonce)
+	if err != nil {
+		return "", fmt.Errorf("decrypting ARI password: %w", err)
+	}
+	s.ARIPass = string(plaintext)
+	return s.ARIPass, nil
+}
+
 type SiteBicomMapping struct {
-	ID              uint      `gorm:"primaryKey;autoIncrement"`
-	SiteID          string    `gorm:"column:site_id;size:64;not null;index"`
-	BicomSystemID   string    `gorm:"column:bicom_system_id;size:64;not null;index"`
-	Priority        int       `gorm:"default:1"`
-	FailoverEnabled bool      `gorm:"column:failover_enabled;default:true"`
+	ID              uint   `gorm:"primaryKey;autoIncrement"`
+	SiteID          string `gorm:"column:site_id;size:64;not null;index"`
+	BicomSystemID   string `gorm:"column:bicom_system_id;size:64;not null;index"`
+	Priority        int    `gorm:"default:1"`
+	FailoverEnabled bool   `gorm:"column:failover_enabled;default:true"`
 	CreatedAt       time.Time
 	UpdatedAt       time.Time
 }
@@ -430,6 +467,12 @@ func (db *DB) GetBicomSystem(ctx context.Context, id string) (*BicomSystem, erro
 }
 
 func (db *DB) CreateBicomSystem(ctx context.Context, s *BicomSystem) error {
+	// Encrypt ARI password before storing
+	if s.ARIPass != "" {
+		if err := s.SetARIPass(s.ARIPass); err != nil {
+			return fmt.Errorf("encrypting ARI password: %w", err)
+		}
+	}
 	if err := db.DB.WithContext(ctx).Create(s).Error; err != nil {
 		return fmt.Errorf("creating bicom system: %w", err)
 	}
@@ -437,24 +480,36 @@ func (db *DB) CreateBicomSystem(ctx context.Context, s *BicomSystem) error {
 }
 
 func (db *DB) UpdateBicomSystem(ctx context.Context, s *BicomSystem) error {
+	// Encrypt ARI password if changed
+	if s.ARIPass != "" && s.ARIPass != s.ARIPassEncryptedString() {
+		if err := s.SetARIPass(s.ARIPass); err != nil {
+			return fmt.Errorf("encrypting ARI password: %w", err)
+		}
+	}
 	if err := db.DB.WithContext(ctx).Model(s).Updates(map[string]interface{}{
-		"name":           s.Name,
-		"api_url":        s.APIURL,
-		"api_key":        s.APIKey,
-		"tenant_id":      s.TenantID,
-		"ari_url":        s.ARIURL,
-		"ari_user":       s.ARIUser,
-		"ari_pass":       s.ARIPass,
-		"ari_app_name":   s.ARIAppName,
-		"webhook_url":    s.WebhookURL,
-		"health_status":  s.HealthStatus,
-		"settings":       s.Settings,
-		"enabled":        s.Enabled,
-		"updated_at":     time.Now(),
+		"name":               s.Name,
+		"api_url":            s.APIURL,
+		"api_key":            s.APIKey,
+		"tenant_id":          s.TenantID,
+		"ari_url":            s.ARIURL,
+		"ari_user":           s.ARIUser,
+		"ari_pass_encrypted": s.ARIPassEncrypted,
+		"ari_pass_nonce":     s.ARIPassNonce,
+		"ari_app_name":       s.ARIAppName,
+		"webhook_url":        s.WebhookURL,
+		"health_status":      s.HealthStatus,
+		"settings":           s.Settings,
+		"enabled":            s.Enabled,
+		"updated_at":         time.Now(),
 	}).Error; err != nil {
 		return fmt.Errorf("updating bicom system: %w", err)
 	}
 	return nil
+}
+
+// ARIPassEncryptedString returns a placeholder to detect if password was changed
+func (s *BicomSystem) ARIPassEncryptedString() string {
+	return "***encrypted***"
 }
 
 func (db *DB) DeleteBicomSystem(ctx context.Context, id string) error {

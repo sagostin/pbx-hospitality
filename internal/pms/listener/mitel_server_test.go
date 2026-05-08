@@ -156,13 +156,21 @@ func TestListenerIntegration(t *testing.T) {
 		errCh <- ln.Listen(ctx)
 	}()
 
-	// Give listener time to start
-	time.Sleep(100 * time.Millisecond)
-
-	// Get actual port
-	ln.mu.RLock()
-	addr := ln.listener.Addr().String()
-	ln.mu.RUnlock()
+	// Wait for listener to be ready by polling
+	var addr string
+	for i := 0; i < 50; i++ {
+		ln.mu.RLock()
+		if ln.listener != nil {
+			addr = ln.listener.Addr().String()
+			ln.mu.RUnlock()
+			break
+		}
+		ln.mu.RUnlock()
+		time.Sleep(10 * time.Millisecond)
+	}
+	if addr == "" {
+		t.Fatal("listener not ready in time")
+	}
 
 	// Connect to listener
 	conn, err := net.Dial("tcp", addr)
@@ -250,7 +258,7 @@ func TestListenerIntegration(t *testing.T) {
 }
 
 func TestListenerClose(t *testing.T) {
-	l := NewListener("localhost", 0)
+	l := newTestMitelListener("localhost", 0)
 	ctx, cancel := context.WithCancel(context.Background())
 
 	// Start listener
@@ -282,7 +290,7 @@ func TestListenerClose(t *testing.T) {
 }
 
 func TestListenerConcurrentConnections(t *testing.T) {
-	l := NewListener("localhost", 0)
+	l := newTestMitelListener("localhost", 0)
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
 
@@ -291,9 +299,21 @@ func TestListenerConcurrentConnections(t *testing.T) {
 		errCh <- l.Listen(ctx)
 	}()
 
-	time.Sleep(100 * time.Millisecond)
-
-	lnAddr := l.listener.Addr().String()
+	// Wait for listener to be ready by polling
+	var lnAddr string
+	for i := 0; i < 50; i++ {
+		l.mu.RLock()
+		if l.listener != nil {
+			lnAddr = l.listener.Addr().String()
+			l.mu.RUnlock()
+			break
+		}
+		l.mu.RUnlock()
+		time.Sleep(10 * time.Millisecond)
+	}
+	if lnAddr == "" {
+		t.Fatal("listener not ready in time")
+	}
 
 	// Open multiple connections concurrently
 	const numConns = 3
@@ -361,7 +381,7 @@ func TestListenerConcurrentConnections(t *testing.T) {
 }
 
 func TestListenerIPAllowlist(t *testing.T) {
-	l := NewListener("localhost", 0)
+	l := newTestMitelListener("localhost", 0)
 	l.allowed = []string{"127.0.0.1", "::1"} // Only allow localhost
 
 	ctx, cancel := context.WithCancel(context.Background())
@@ -372,9 +392,21 @@ func TestListenerIPAllowlist(t *testing.T) {
 		errCh <- l.Listen(ctx)
 	}()
 
-	time.Sleep(100 * time.Millisecond)
-
-	lnAddr := l.listener.Addr().String()
+	// Wait for listener to be ready by polling
+	var lnAddr string
+	for i := 0; i < 50; i++ {
+		l.mu.RLock()
+		if l.listener != nil {
+			lnAddr = l.listener.Addr().String()
+			l.mu.RUnlock()
+			break
+		}
+		l.mu.RUnlock()
+		time.Sleep(10 * time.Millisecond)
+	}
+	if lnAddr == "" {
+		t.Fatal("listener not ready in time")
+	}
 
 	// Allowed connection should succeed
 	t.Run("allowed IP connects successfully", func(t *testing.T) {
@@ -407,8 +439,8 @@ func TestListenerIPAllowlist(t *testing.T) {
 func TestNewMitelListenerFactory(t *testing.T) {
 	events := make(chan pms.Event, 10)
 	cfg := pms.ListenerConfig{
-		ListenHost: "0.0.0.0",
-		ListenPort: 0, // Will use default
+		ListenHost:    "0.0.0.0",
+		ListenPort:    0, // Will use default
 		AllowedPMSIPs: []string{"192.168.1.100"},
 	}
 

@@ -27,18 +27,18 @@ type bicomSystemResponse struct {
 }
 
 type createBicomSystemRequest struct {
-	ID       string                 `json:"id"`
-	Name     string                 `json:"name"`
-	APIURL   string                 `json:"api_url"`
-	APIKey   string                 `json:"api_key"`
-	TenantID string                 `json:"tenant_id,omitempty"`
-	ARIURL   string                 `json:"ari_url,omitempty"`
-	ARIUser  string                 `json:"ari_user,omitempty"`
-	ARIPass  string                 `json:"ari_pass,omitempty"`
-	ARIAppName string               `json:"ari_app_name,omitempty"`
-	WebhookURL string               `json:"webhook_url,omitempty"`
-	Settings map[string]interface{} `json:"settings"`
-	Enabled  bool                   `json:"enabled"`
+	ID         string                 `json:"id"`
+	Name       string                 `json:"name"`
+	APIURL     string                 `json:"api_url"`
+	APIKey     string                 `json:"api_key"`
+	TenantID   string                 `json:"tenant_id,omitempty"`
+	ARIURL     string                 `json:"ari_url,omitempty"`
+	ARIUser    string                 `json:"ari_user,omitempty"`
+	ARIPass    string                 `json:"ari_pass,omitempty"`
+	ARIAppName string                 `json:"ari_app_name,omitempty"`
+	WebhookURL string                 `json:"webhook_url,omitempty"`
+	Settings   map[string]interface{} `json:"settings"`
+	Enabled    bool                   `json:"enabled"`
 }
 
 type updateBicomSystemRequest struct {
@@ -143,19 +143,19 @@ func (s *AdminServer) createBicomSystem(c *fiber.Ctx) error {
 	}
 
 	system := &db.BicomSystem{
-		ID:          req.ID,
-		Name:        req.Name,
-		APIURL:      req.APIURL,
-		APIKey:      req.APIKey,
-		TenantID:    req.TenantID,
-		ARIURL:      req.ARIURL,
-		ARIUser:     req.ARIUser,
-		ARIPass:     req.ARIPass,
-		ARIAppName:  req.ARIAppName,
-		WebhookURL:  req.WebhookURL,
+		ID:           req.ID,
+		Name:         req.Name,
+		APIURL:       req.APIURL,
+		APIKey:       req.APIKey,
+		TenantID:     req.TenantID,
+		ARIURL:       req.ARIURL,
+		ARIUser:      req.ARIUser,
+		ARIPass:      req.ARIPass,
+		ARIAppName:   req.ARIAppName,
+		WebhookURL:   req.WebhookURL,
 		HealthStatus: "unknown",
-		Settings:    bicomSettingsToJSON(req.Settings),
-		Enabled:     req.Enabled,
+		Settings:     bicomSettingsToJSON(req.Settings),
+		Enabled:      req.Enabled,
 	}
 	if err := s.db.CreateBicomSystem(c.Context(), system); err != nil {
 		log.Error().Err(err).Str("system", req.ID).Msg("Failed to create bicom system")
@@ -259,6 +259,64 @@ func (s *AdminServer) deleteBicomSystem(c *fiber.Ctx) error {
 	}
 
 	return c.SendStatus(fiber.StatusNoContent)
+}
+
+type updateARISecretRequest struct {
+	ARIPass string `json:"ari_pass"`
+}
+
+func (s *AdminServer) updateBicomSystemARISecret(c *fiber.Ctx) error {
+	if s.db == nil {
+		return writeError(c, "database not configured", "DB_NOT_CONFIGURED", fiber.StatusServiceUnavailable)
+	}
+
+	id := c.Params("id")
+	if !validateBicomSystemID(id) {
+		return writeError(c, "invalid bicom system ID format", "INVALID_ID", fiber.StatusBadRequest)
+	}
+
+	var req updateARISecretRequest
+	if err := c.BodyParser(&req); err != nil {
+		return writeError(c, "invalid request body", "INVALID_BODY", fiber.StatusBadRequest)
+	}
+
+	if req.ARIPass == "" {
+		return writeError(c, "ari_pass is required", "VALIDATION_ERROR", fiber.StatusBadRequest)
+	}
+
+	existing, err := s.db.GetBicomSystem(c.Context(), id)
+	if err != nil {
+		log.Error().Err(err).Str("system", id).Msg("Failed to get bicom system for secret update")
+		return writeError(c, "failed to get bicom system", "INTERNAL_ERROR", fiber.StatusInternalServerError)
+	}
+	if existing == nil {
+		return writeError(c, "bicom system not found", "NOT_FOUND", fiber.StatusNotFound)
+	}
+
+	// Set and encrypt the new ARI password
+	existing.ARIPass = req.ARIPass
+	if err := existing.SetARIPass(req.ARIPass); err != nil {
+		log.Error().Err(err).Str("system", id).Msg("Failed to encrypt ARI password")
+		return writeError(c, "failed to encrypt password", "ENCRYPTION_FAILED", fiber.StatusInternalServerError)
+	}
+
+	if err := s.db.UpdateBicomSystem(c.Context(), existing); err != nil {
+		log.Error().Err(err).Str("system", id).Msg("Failed to update bicom system secret")
+		return writeError(c, "failed to update secret", "INTERNAL_ERROR", fiber.StatusInternalServerError)
+	}
+
+	// Trigger PBX reload if manager is available
+	if s.pbxManager != nil {
+		if err := s.pbxManager.ReloadSystem(c.Context(), id); err != nil {
+			log.Warn().Err(err).Str("system", id).Msg("Failed to reload PBX after secret update")
+		}
+	}
+
+	log.Info().Str("system", id).Msg("ARI secret updated for bicom system")
+	return c.JSON(map[string]string{
+		"status": "updated",
+		"system": id,
+	})
 }
 
 type siteBicomMappingRequest struct {
