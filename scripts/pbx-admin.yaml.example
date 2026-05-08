@@ -1,0 +1,5 @@
+# PBX Hospitality Admin Configuration
+# Place this file at ~/.pbx-admin.yaml or .pbx-admin.yaml in the project root
+
+api_url: http://localhost:8080
+admin_key: your-admin-key-here
