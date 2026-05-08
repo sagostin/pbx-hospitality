@@ -28,9 +28,6 @@ WORKDIR /app
 # Copy binary from builder
 COPY --from=builder /bicom-hospitality .
 
-# Copy migrations (for future use with migration tool)
-COPY --from=builder /app/migrations ./migrations
-
 # Use non-root user
 USER appuser
 
