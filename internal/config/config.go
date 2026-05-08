@@ -4,8 +4,6 @@ import (
 	"fmt"
 	"os"
 	"strconv"
-
-	"gopkg.in/yaml.v3"
 )
 
 // Config holds the complete application configuration
@@ -15,32 +13,6 @@ type Config struct {
 	Crypto         CryptoConfig          `yaml:"crypto"`
 	Logging        LoggingConfig         `yaml:"logging"`
 	SiteConnectors []SiteConnectorConfig `yaml:"site_connectors"`
-}
-
-// SiteConnectorConfig describes a standalone PMS listener to run.
-// The site-connector binary (cmd/site-connector) starts only the listeners
-// defined here — no DB, no HTTP API, no tenant logic.
-// Each entry registers a protocol listener (e.g. "fias", "mitel") via the
-// pms.ListenerRegistry, so the protocol must be one that has called
-// pms.RegisterListener in its init() function.
-type SiteConnectorConfig struct {
-	Protocol      string       `yaml:"protocol"`
-	ListenHost    string       `yaml:"listen_host"`
-	ListenPort    int          `yaml:"listen_port"`
-	AllowedPMSIPs []string     `yaml:"allowed_pms_ips,omitempty"`
-	Output        OutputConfig `yaml:"output"`
-}
-
-type OutputConfig struct {
-	URL                 string `yaml:"url"`
-	UseWebsocket        bool   `yaml:"use_websocket"`
-	BufferEnabled       bool   `yaml:"buffer_enabled"`
-	BufferDir           string `yaml:"buffer_dir"`
-	BufferMaxSizeMB     int64  `yaml:"buffer_max_size_mb"`
-	BatchEnabled        bool   `yaml:"batch_enabled"`
-	BatchSize           int    `yaml:"batch_size"`
-	BatchTimeoutSeconds int    `yaml:"batch_timeout_seconds"`
-	BackpressureEnabled bool   `yaml:"backpressure_enabled"`
 }
 
 // ServerConfig holds HTTP server settings
@@ -75,11 +47,23 @@ type LoggingConfig struct {
 	WebSocketLogs WebSocketLogConfig `yaml:"websocket_logs"`
 }
 
-// WebSocketLogConfig holds WebSocket log sink settings for receiving logs from site connectors
+// WebSocketLogConfig holds WebSocket log sink settings
 type WebSocketLogConfig struct {
 	Enabled   bool   `yaml:"enabled"`
 	Path      string `yaml:"path"`
 	AuthToken string `yaml:"auth_token"`
+}
+
+// TenantConfig holds per-tenant configuration (loaded from DB)
+type TenantConfig struct {
+	ID         string         `yaml:"id"`
+	Name       string         `yaml:"name"`
+	SiteID     string         `yaml:"site_id"`
+	PMS        PMSConfig      `yaml:"pms"`
+	PBX        PBXConfig      `yaml:"pbx"`
+	RoomPrefix string         `yaml:"room_prefix"`
+	Timezone   string         `yaml:"timezone"`
+	Settings   TenantSettings `yaml:"settings"`
 }
 
 // PMSConfig holds PMS connection settings
@@ -97,7 +81,7 @@ type PBXConfig struct {
 	ARIURL        string `yaml:"ari_url"`
 	ARIWSUrl      string `yaml:"ari_ws_url"`
 	ARIUser       string `yaml:"ari_user"`
-	ARIPass       string `yaml:"ari_pass"`
+	ARIPass       string `yaml:"aripass"`
 	AppName       string `yaml:"app_name"`
 	APIURL        string `yaml:"api_url"`
 	APIKey        string `yaml:"api_key"`
@@ -108,30 +92,18 @@ type PBXConfig struct {
 	WebhookSecret string `yaml:"webhook_secret"`
 }
 
-// TenantConfig holds per-tenant configuration
-type TenantConfig struct {
-	ID         string         `yaml:"id"`
-	Name       string         `yaml:"name"`
-	SiteID     string         `yaml:"site_id"`
-	PMS        PMSConfig      `yaml:"pms"`
-	PBX        PBXConfig      `yaml:"pbx"`
-	RoomPrefix string         `yaml:"room_prefix"`
-	Timezone   string         `yaml:"timezone"`
-	Settings   TenantSettings `yaml:"settings"`
-}
-
-// TenantSettings holds feature flags and access codes for a tenant
+// TenantSettings holds feature flags and access codes
 type TenantSettings struct {
-	RoomPrefix     string         `yaml:"room_prefix"`     // Prepended to room numbers for extension mapping
-	ExtensionRange [2]int         `yaml:"extension_range"` // Min/max extension numbers
-	Features       TenantFeatures `yaml:"features"`        // Enabled features
-	AccessCodes    AccessCodes    `yaml:"access_codes"`    // Feature access codes
+	RoomPrefix     string         `yaml:"room_prefix"`
+	ExtensionRange [2]int         `yaml:"extension_range"`
+	Features       TenantFeatures `yaml:"features"`
+	AccessCodes    AccessCodes    `yaml:"access_codes"`
 }
 
-// TenantFeatures specifies which features are enabled for a tenant
+// TenantFeatures specifies which features are enabled
 type TenantFeatures struct {
 	WakeUpCalls   bool `yaml:"wake_up_calls"`
-	RoomCleanCode bool `yaml:"room_clean_code"` // Code to signal room needs cleaning
+	RoomCleanCode bool `yaml:"room_clean_code"`
 	DND           bool `yaml:"dnd"`
 	MWI           bool `yaml:"mwi"`
 	Voicemail     bool `yaml:"voicemail"`
@@ -140,11 +112,33 @@ type TenantFeatures struct {
 
 // AccessCodes defines feature access codes
 type AccessCodes struct {
-	WakeUp       string `yaml:"wake_up"`        // e.g., "*411"
-	RoomClean    string `yaml:"room_clean"`     // e.g., "*60"
-	RoomService  string `yaml:"room_service"`   // e.g., "*70"
-	DoNotDisturb string `yaml:"do_not_disturb"` // e.g., "*78"
-	Voicemail    string `yaml:"voicemail"`      // e.g., "*98"
+	WakeUp       string `yaml:"wake_up"`
+	RoomClean    string `yaml:"room_clean"`
+	RoomService  string `yaml:"room_service"`
+	DoNotDisturb string `yaml:"do_not_disturb"`
+	Voicemail    string `yaml:"voicemail"`
+}
+
+// SiteConnectorConfig describes a standalone PMS listener
+type SiteConnectorConfig struct {
+	Protocol      string       `yaml:"protocol"`
+	ListenHost    string       `yaml:"listen_host"`
+	ListenPort    int          `yaml:"listen_port"`
+	AllowedPMSIPs []string     `yaml:"allowed_pms_ips,omitempty"`
+	Output        OutputConfig `yaml:"output"`
+}
+
+// OutputConfig holds output settings for site connectors
+type OutputConfig struct {
+	URL                 string `yaml:"url"`
+	UseWebsocket        bool   `yaml:"use_websocket"`
+	BufferEnabled       bool   `yaml:"buffer_enabled"`
+	BufferDir           string `yaml:"buffer_dir"`
+	BufferMaxSizeMB     int64  `yaml:"buffer_max_size_mb"`
+	BatchEnabled        bool   `yaml:"batch_enabled"`
+	BatchSize           int    `yaml:"batch_size"`
+	BatchTimeoutSeconds int    `yaml:"batch_timeout_seconds"`
+	BackpressureEnabled bool   `yaml:"backpressure_enabled"`
 }
 
 // DSN returns the PostgreSQL connection string
@@ -155,27 +149,75 @@ func (d *DatabaseConfig) DSN() string {
 	)
 }
 
-// Load reads configuration from file and environment
+// Load reads configuration from environment variables only
 func Load() (*Config, error) {
-	configPath := os.Getenv("CONFIG_PATH")
-	if configPath == "" {
-		configPath = "config/config.yaml"
+	cfg := &Config{}
+
+	if err := loadEnvOverrides(cfg); err != nil {
+		return nil, err
 	}
 
-	data, err := os.ReadFile(configPath)
-	if err != nil {
-		return nil, fmt.Errorf("reading config file: %w", err)
+	applyDefaults(cfg)
+
+	return cfg, nil
+}
+
+func loadEnvOverrides(cfg *Config) error {
+	if lokiEndpoint := os.Getenv("LOKI_ENDPOINT"); lokiEndpoint != "" {
+		cfg.Logging.LokiURL = lokiEndpoint
+	}
+	if lokiEnabled := os.Getenv("LOKI_ENABLED"); lokiEnabled != "" {
+		cfg.Logging.LokiEnabled = lokiEnabled == "true" || lokiEnabled == "1"
+	}
+	if serviceName := os.Getenv("SERVICE_NAME"); serviceName != "" {
+		cfg.Logging.WebSocketLogs.AuthToken = serviceName
+	}
+	if dbHost := os.Getenv("DB_HOST"); dbHost != "" {
+		cfg.Database.Host = dbHost
+	}
+	if dbPort := os.Getenv("DB_PORT"); dbPort != "" {
+		port, err := strconv.Atoi(dbPort)
+		if err != nil {
+			return fmt.Errorf("invalid DB_PORT: %w", err)
+		}
+		cfg.Database.Port = port
+	}
+	if dbUser := os.Getenv("DB_USER"); dbUser != "" {
+		cfg.Database.User = dbUser
+	}
+	if dbPass := os.Getenv("DB_PASSWORD"); dbPass != "" {
+		cfg.Database.Password = dbPass
+	}
+	if dbName := os.Getenv("DB_NAME"); dbName != "" {
+		cfg.Database.Database = dbName
+	}
+	if dbSSL := os.Getenv("DB_SSL_MODE"); dbSSL != "" {
+		cfg.Database.SSLMode = dbSSL
+	}
+	if serverPort := os.Getenv("SERVER_PORT"); serverPort != "" {
+		port, err := strconv.Atoi(serverPort)
+		if err != nil {
+			return fmt.Errorf("invalid SERVER_PORT: %w", err)
+		}
+		cfg.Server.Port = port
+	}
+	if adminAPIKey := os.Getenv("ADMIN_API_KEY"); adminAPIKey != "" {
+		cfg.Server.AdminAPIKey = adminAPIKey
+	}
+	if masterKey := os.Getenv("ENCRYPTION_MASTER_KEY"); masterKey != "" {
+		cfg.Crypto.MasterKey = masterKey
+	}
+	if logLevel := os.Getenv("LOG_LEVEL"); logLevel != "" {
+		cfg.Logging.Level = logLevel
+	}
+	if logFormat := os.Getenv("LOG_FORMAT"); logFormat != "" {
+		cfg.Logging.Format = logFormat
 	}
 
-	// Expand environment variables in config
-	expanded := os.ExpandEnv(string(data))
+	return nil
+}
 
-	var cfg Config
-	if err := yaml.Unmarshal([]byte(expanded), &cfg); err != nil {
-		return nil, fmt.Errorf("parsing config: %w", err)
-	}
-
-	// Apply defaults
+func applyDefaults(cfg *Config) {
 	if cfg.Server.Port == 0 {
 		cfg.Server.Port = 8080
 	}
@@ -200,46 +242,4 @@ func Load() (*Config, error) {
 	if cfg.Logging.WebSocketLogs.Path == "" {
 		cfg.Logging.WebSocketLogs.Path = "/ws/logs"
 	}
-
-	// Override from environment variables
-	if lokiEndpoint := os.Getenv("LOKI_ENDPOINT"); lokiEndpoint != "" {
-		cfg.Logging.LokiURL = lokiEndpoint
-	}
-	if lokiEnabled := os.Getenv("LOKI_ENABLED"); lokiEnabled != "" {
-		cfg.Logging.LokiEnabled = lokiEnabled == "true" || lokiEnabled == "1"
-	}
-	if serviceName := os.Getenv("SERVICE_NAME"); serviceName != "" {
-		cfg.Logging.WebSocketLogs.AuthToken = serviceName
-	}
-
-	// Override database config from environment variables
-	if dbHost := os.Getenv("DB_HOST"); dbHost != "" {
-		cfg.Database.Host = dbHost
-	}
-	if dbPort := os.Getenv("DB_PORT"); dbPort != "" {
-		if port, err := strconv.Atoi(dbPort); err == nil {
-			cfg.Database.Port = port
-		}
-	}
-	if dbUser := os.Getenv("DB_USER"); dbUser != "" {
-		cfg.Database.User = dbUser
-	}
-	if dbPass := os.Getenv("DB_PASSWORD"); dbPass != "" {
-		cfg.Database.Password = dbPass
-	}
-	if dbName := os.Getenv("DB_NAME"); dbName != "" {
-		cfg.Database.Database = dbName
-	}
-	if dbSSL := os.Getenv("DB_SSL_MODE"); dbSSL != "" {
-		cfg.Database.SSLMode = dbSSL
-	}
-
-	// Override server config from environment variables
-	if serverPort := os.Getenv("SERVER_PORT"); serverPort != "" {
-		if port, err := strconv.Atoi(serverPort); err == nil {
-			cfg.Server.Port = port
-		}
-	}
-
-	return &cfg, nil
 }
