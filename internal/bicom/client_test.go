@@ -86,14 +86,15 @@ func TestUpdateExtensionName(t *testing.T) {
 
 func TestScheduleWakeUpCall(t *testing.T) {
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		if r.FormValue("action") != "pbxware.ext.es.wakeupcall.edit" {
-			t.Errorf("unexpected action: %s", r.FormValue("action"))
+		if r.FormValue("action") != "pbxware.ext.es.opwakeupcall.set" {
+			t.Errorf("unexpected action: %s, want pbxware.ext.es.opwakeupcall.set", r.FormValue("action"))
 		}
-		if r.FormValue("time") != "07:30" {
-			t.Errorf("unexpected time: %s", r.FormValue("time"))
+		// Bicom wake-up is a state toggle — no time param.
+		if r.FormValue("time") != "" {
+			t.Errorf("Bicom wake-up API must not receive time param, got: %s", r.FormValue("time"))
 		}
-		if r.FormValue("enabled") != "1" {
-			t.Errorf("expected enabled=1, got: %s", r.FormValue("enabled"))
+		if r.FormValue("state") != "yes" {
+			t.Errorf("expected state=yes, got: %s", r.FormValue("state"))
 		}
 
 		w.Header().Set("Content-Type", "application/json")
@@ -110,6 +111,86 @@ func TestScheduleWakeUpCall(t *testing.T) {
 	err := client.ScheduleWakeUpCall(context.Background(), "1001", wakeTime)
 	if err != nil {
 		t.Errorf("ScheduleWakeUpCall() error = %v", err)
+	}
+}
+
+func TestCancelWakeUpCall(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.FormValue("action") != "pbxware.ext.es.opwakeupcall.set" {
+			t.Errorf("unexpected action: %s", r.FormValue("action"))
+		}
+		if r.FormValue("state") != "no" {
+			t.Errorf("expected state=no, got: %s", r.FormValue("state"))
+		}
+
+		w.Header().Set("Content-Type", "application/json")
+		json.NewEncoder(w).Encode(APIResponse{Success: true})
+	}))
+	defer server.Close()
+
+	client, _ := NewClient(Config{
+		BaseURL: server.URL,
+		APIKey:  "test-key",
+	})
+
+	err := client.CancelWakeUpCall(context.Background(), "1001")
+	if err != nil {
+		t.Errorf("CancelWakeUpCall() error = %v", err)
+	}
+}
+
+func TestSetWakeUpStateFailure(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		json.NewEncoder(w).Encode(APIResponse{
+			Success: false,
+			Message: "extension not found",
+		})
+	}))
+	defer server.Close()
+
+	client, _ := NewClient(Config{
+		BaseURL: server.URL,
+		APIKey:  "test-key",
+	})
+
+	err := client.SetWakeUpState(context.Background(), "999", true)
+	if err == nil {
+		t.Fatal("expected error, got nil")
+	}
+}
+
+func TestGetWakeUpCallStatus(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Query().Get("action") != "pbxware.ext.es.opwakeupcall.get" {
+			t.Errorf("unexpected action: %s", r.URL.Query().Get("action"))
+		}
+
+		w.Header().Set("Content-Type", "application/json")
+		json.NewEncoder(w).Encode(APIResponse{
+			Success: true,
+			Data:    json.RawMessage(`{"extension":"1001","enabled":true,"snooze":5}`),
+		})
+	}))
+	defer server.Close()
+
+	client, _ := NewClient(Config{
+		BaseURL: server.URL,
+		APIKey:  "test-key",
+	})
+
+	status, err := client.GetWakeUpCallStatus(context.Background(), "1001")
+	if err != nil {
+		t.Errorf("GetWakeUpCallStatus() error = %v", err)
+	}
+	if status == nil {
+		t.Fatal("expected status, got nil")
+	}
+	if !status.Enabled {
+		t.Error("expected Enabled=true")
+	}
+	if status.Snooze != 5 {
+		t.Errorf("expected snooze=5, got %d", status.Snooze)
 	}
 }
 
