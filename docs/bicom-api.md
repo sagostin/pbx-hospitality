@@ -46,24 +46,51 @@ POST /api/?action=pbxware.ext.edit&id={ext_id}&service_plan={plan_id}
 
 ## Wake-Up Calls
 
-### Schedule Wake-Up
+The Bicom PBXware REST API exposes wake-up as a **state toggle** — the API
+confirms whether an extension has a wake-up scheduled but **does not accept a
+time parameter**. The actual ring-at-HH:MM is fired by the PBX itself (the
+guest sets the time via the room phone's `*411` feature code, or the time
+is configured via the PBXware UI / dialplan).
+
+For hospitality integrations where the PMS drives the wake-up time
+programmatically, the service complements the state toggle with an in-process
+**WakeUpScheduler** that uses ARI `Channels.Originate` to place the call at
+the scheduled time (Tier 1 in `ROADMAP.md`).
+
+### Operator-set wake-up (the variant hospitality uses)
+
 ```
-POST /api/?action=pbxware.ext.es.wakeupcall.edit&id={ext_id}&time={HH:MM}&enabled=1
+POST /api/?action=pbxware.ext.es.opwakeupcall.set&server={tenant_id}&id={ext_id}&state=yes
+POST /api/?action=pbxware.ext.es.opwakeupcall.set&server={tenant_id}&id={ext_id}&state=no
+GET  /api/?action=pbxware.ext.es.opwakeupcall.get&server={tenant_id}&id={ext_id}
 ```
 
-### Cancel Wake-Up
+Accepted `state` values: `yes`, `no`, `1`, `0`.
+
+### Self-set wake-up (guest dialed *411 themselves)
+
 ```
-POST /api/?action=pbxware.ext.es.wakeupcall.edit&id={ext_id}&enabled=0
+POST /api/?action=pbxware.ext.es.wakeupcall.set&server={tenant_id}&id={ext_id}&state=yes
+POST /api/?action=pbxware.ext.es.wakeupcall.set&server={tenant_id}&id={ext_id}&state=no
+GET  /api/?action=pbxware.ext.es.wakeupcall.get&server={tenant_id}&id={ext_id}
 ```
 
-### Get Wake-Up Status
+### Bulk (set every Enhanced Service flag in one call)
+
 ```
-GET /api/?action=pbxware.ext.es.wakeupcall.get&id={ext_id}
+POST /api/?action=pbxware.ext.es.states.set&server={tenant_id}&id={ext_id}&all=yes&callerid=&dnd=&wakeupcall=&opwakeupcall=&...
 ```
 
-**Note:** Wake-up calls can also be managed via feature codes:
-- `*411` - User sets own wake-up call
-- `*412` - Operator sets wake-up for any extension
+### Legacy endpoint
+
+> **Note:** The earlier docs shipped with this repository referenced
+> `pbxware.ext.es.wakeupcall.edit` with a `time` parameter. That endpoint
+> does not exist in the public Bicom API. Use `opwakeupcall.set` instead
+> (with the WakeUpScheduler doing the time-based originate).
+
+> Wake-up calls can also be managed via feature codes:
+> - `*411` - User sets own wake-up call
+> - `*412` - Operator sets wake-up for any extension
 
 ---
 

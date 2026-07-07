@@ -35,6 +35,29 @@ Status legend:
 - [DONE] `tenant.reconnects` counter is now incremented via `bumpReconnect`
       (not yet wired into a real reconnect loop — see §3 below).
 
+- [DONE] **Wake-up call pipeline (Tier 0):**
+      - `tenant.handleWakeUp` now tries metadata keys
+        `["TI", "wakeup_time", "TI_RAW"]` in order — fixes the silent
+        TigerTMS wake-up failure (Bug A).
+      - Bicom wake-up rewritten: `pbxware.ext.es.opwakeupcall.set` with
+        `state=yes|no`. The previous `wakeupcall.edit` endpoint with a
+        `time` parameter does not exist in the public Bicom API.
+      - Added `bicom.Client.SetWakeUpState`, `GetWakeUpCallStatus`,
+        `TestScheduleWakeUpCall` updated, plus
+        `TestCancelWakeUpCall`, `TestSetWakeUpStateFailure`,
+        `TestGetWakeUpCallStatus`.
+      - Zultys wake-up now loud-fails (structured error log + counter
+        `hospitality_pbx_wakeup_unsupported_total{pbx="zultys",action}`)
+        instead of silent warn-log.
+      - New admin endpoint: `GET /admin/tenants/{id}/capabilities`
+        surfaces per-tenant PMS/PBX capability flags so operators can
+        spot misconfigurations like "Zultys tenant receiving PMS
+        wake-up events".
+      - Tests added: `TestFirstNonEmpty`,
+        `TestParseWakeUpTime` (incl. roll-forward),
+        `TestTigerTMSWakeup_MetadataKey` (regression for Bug A),
+        `TestHandlerAuth`.
+
 ## 2. Operational Readiness
 
 - [DONE] `Dockerfile` and `docker-compose.yml` healthcheck now use the
@@ -59,6 +82,13 @@ Status legend:
       reverse proxy in front.
 
 ## 3. Tenant / PBX Provider Hardening
+
+- [TODO] **WakeUpScheduler (Tier 1)** — in-process goroutine + `wakeup_calls`
+      table; uses ARI `Channels.Originate` to fire Bicom wake-up calls at
+      the scheduled time. The Bicom REST API only supports state toggle
+      (no time parameter), so the scheduler is the only way to deliver
+      PMS-driven timed wake-ups on Bicom. See
+      [Wake-Up Call Flow diagram](docs/architecture.md#wake-up-call-flow-pms-driven-bicom--ari).
 
 - [TODO] Add a real reconnect supervisor for `tenant.Start`. Today, a
       single transient PMS or PBX failure at boot kills the tenant for
@@ -96,6 +126,23 @@ Status legend:
 - [TODO] `site-connector` writes to stdout as JSONL when no `output.url`
       is configured. Add `--output file` for an at-least-once disk spool
       mode that the `output.ResilientOutput` already supports internally.
+
+## 5. PMS Adapter Coverage
+
+| Adapter | Status | Notes |
+|---|---|---|
+| FIAS (Oracle) | ✅ | connect + listen modes |
+| Mitel SX-200 | ✅ connect; ⚠️ wake-up parsing missing `WAK` | Tier 2 |
+| TigerTMS iLink | ✅ Tier 0 wake-up fix; ⚠️ COS / DDI events lost | Tier 2 |
+| ASIP | 📋 planned | reuses FIAS parser; Tier 3 |
+| Mews | 📋 planned | REST push; Tier 3 |
+| Cloudbeds | 📋 planned | REST push; Tier 3 |
+
+## 6. Outbound Webhooks (hospitality → PMS)
+
+- [TODO] Tier 4 — `outbound_webhooks` table + dispatcher + admin CRUD +
+      signed delivery + exp-backoff retry. See architecture mermaid in
+      `docs/architecture.md`.
 
 ## 5. Test Coverage
 
@@ -145,11 +192,15 @@ Backlog:
 ## Suggested PR-cadence order
 
 1. ✅ Tests green on CI (this PR).
-2. Tenant reconnect supervisor (§3) — fixes the "kill the process to
-   recover" pain point that every operator hits in week one.
-3. Reconcile `pbx.Manager` ↔ `tenant.Manager` (§3) — pick one model.
-4. Wire `pbx.CallEvent` → PMS MWI (§3) — closes the voicemail→lamp loop.
-5. Fold `site-connector` into the main binary (§4) — operational
-   simplification, removes a class of misconfiguration.
-6. Delete the legacy `websocket/bridge.go` + `ari/client.go` (§3)
-   unless a use case emerges.
+2. ✅ **Tier 0 — Wake-up pipeline (this PR).** TigerTMS metadata key fix,
+   Bicom `opwakeupcall.set` rewrite, Zultys loud-fail, capabilities
+   endpoint, regression tests.
+3. **Tier 1 — WakeUpScheduler + ARI originate.** Fixes the "kill the
+   process to recover" pain point that every operator hits in week one,
+   and is the missing half of the wake-up pipeline.
+4. Reconcile `pbx.Manager` ↔ `tenant.Manager` (§3) — pick one model.
+5. Wire `pbx.CallEvent` → PMS MWI (§3) — closes the voicemail→lamp loop.
+6. Tier 2 — TigerTMS round-out (COS, DDI, reservation_id) + Mitel WAK.
+7. Tier 3 — ASIP, Mews, Cloudbeds adapters.
+8. Tier 4 — Outbound webhook delivery.
+9. Fold `site-connector` into the main binary.

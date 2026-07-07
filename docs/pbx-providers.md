@@ -75,8 +75,15 @@ tenants:
 | Voicemail Greeting | REST API | `pbxware.ext.es.vm.edit` |
 | MWI | ARI | Mailbox state update |
 | DND | REST API | `pbxware.ext.es.dnd.edit` |
-| Wake-Up Calls | REST API | `pbxware.ext.es.wakeupcall.edit` |
-| Call Forward | REST API | `pbxware.ext.es.callforward.edit` |
+| Wake-Up State | REST API | `pbxware.ext.es.opwakeupcall.set` (state-only) |
+| Wake-Up Ring | ARI | `Channels.Originate` via WakeUpScheduler (Tier 1) |
+| Call Forward | REST API | `pbxware.ext.es.callfwd.set` |
+
+> **Wake-up calls on Bicom are a two-part operation.** The REST API
+> (`opwakeupcall.set state=yes`) toggles whether the extension has a wake-up
+> scheduled; the service's **WakeUpScheduler** then uses ARI to originate
+> the actual call at the scheduled time. See `docs/architecture.md` and
+> `ROADMAP.md` Tier 1 for details.
 
 See [Bicom API Reference](bicom-api.md) for detailed endpoint documentation.
 
@@ -160,13 +167,28 @@ X-Webhook-Signature: <HMAC-SHA256 hex digest of body>
 
 ### Wake-Up Call Limitation
 
-Zultys does not provide a native API for scheduled wake-up calls. For properties requiring wake-up call functionality with Zultys, a future enhancement would involve:
+**Zultys does not provide a native API for scheduled wake-up calls.**
+ScheduleWakeUpCall / CancelWakeUpCall on the Zultys provider returns
+`ErrWakeUpNotSupported` and emits a structured error log + counter
+(`hospitality_pbx_wakeup_unsupported_total{pbx="zultys",action}`).
 
-1. **External Call Scheduler** - A FreeSWITCH-based service that stores scheduled wake-up times
-2. **At scheduled time** - FreeSWITCH originates a call to the room extension
-3. **Playback** - Plays a wake-up announcement or connects to IVR
+Operators relying on Zultys + PMS-driven wake-ups have three options:
 
-This is tracked as a future enhancement.
+1. **Migrate the tenant to Bicom** (which supports wake-up via the
+   Bicom REST API + WakeUpScheduler + ARI).
+2. **Run a FreeSWITCH / Asterisk sidecar** that originates wake-up calls
+   into the Zultys via SIP and plays a greeting.
+3. **Let the guest set their own wake-up** via the room phone's feature
+   code — the PMS wake-up event will be rejected.
+
+You can verify a tenant's capabilities at runtime:
+
+```bash
+curl -H "X-Admin-Key: $KEY" http://localhost:8080/admin/tenants/{id}/capabilities
+```
+
+The `pbx.supports_wake_up_calls` boolean is `false` for Zultys tenants.
+The endpoint returns 200 even when the tenant is disconnected.
 
 ---
 

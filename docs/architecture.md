@@ -373,7 +373,35 @@ sequenceDiagram
     Processor->>Adapter: SendAck()
 ```
 
-#### PBX → PMS Reverse Flow (voicemail webhook → MWI)
+#### Wake-Up Call Flow (PMS-driven, Bicom + ARI)
+
+```mermaid
+sequenceDiagram
+    autonumber
+    participant PMS as PMS<br/>(FIAS / TigerTMS / Mitel / ASIP / Mews / Cloudbeds)
+    participant Adapter as PMS Adapter
+    participant Tenant as Tenant Manager
+    participant BicomAPI as Bicom REST API
+    participant Sched as WakeUpScheduler<br/>(in-process)
+    participant DB as wakeup_calls table
+    participant ARI as ARI / SIP
+
+    Note over PMS,ARI: Two-part: state toggle via REST, ring via ARI
+    PMS->>Adapter: wake-up event with time
+    Adapter->>Tenant: pms.Event{Type: EventWakeUp,<br/>Metadata: {TI / wakeup_time / TI_RAW}}
+    Tenant->>Tenant: parseWakeUpTime → time.Time
+    Tenant->>BicomAPI: POST pbxware.ext.es.opwakeupcall.set<br/>id={ext}&state=yes
+    BicomAPI-->>Tenant: {success:true}
+    Tenant->>Sched: Schedule(ext, time, tenantID)
+    Sched->>DB: INSERT wakeup_calls status='pending'
+    Note over Sched: tick every 10s
+    Sched->>DB: SELECT pending where scheduled_at <= now()
+    Sched->>ARI: Channels.Originate(ext=room, app=wakeup,<br/>args=greeting-url)
+    ARI-->>Sched: Channel answered, hangup
+    Sched->>DB: UPDATE status='completed'
+```
+
+#### PBX-side voicemail → PMS-side MWI (when reverse webhook is configured)
 
 ```mermaid
 sequenceDiagram

@@ -221,10 +221,12 @@ For a deeper view see [`docs/architecture.md`](docs/architecture.md).
 
 | Group | Endpoints |
 |-------|-----------|
-| `/admin/tenants` | CRUD + bulk import + per-tenant rooms/sessions/events |
+| `/admin/tenants` | CRUD + bulk import + per-tenant rooms/sessions/events + `/{id}/capabilities` |
 | `/admin/sites` | CRUD + per-site bicom-system mapping |
 | `/admin/bicom-systems` | CRUD + `/{id}/ari-secret` rotation |
 | `/admin/pbx` | `GET /status`, `POST /reload`, `POST /{id}/reload` |
+
+`GET /admin/tenants/{id}/capabilities` returns runtime PMS/PBX capability flags — use it to detect misconfigurations like a Zultys tenant receiving PMS wake-up events.
 
 ### Inbound PMS
 

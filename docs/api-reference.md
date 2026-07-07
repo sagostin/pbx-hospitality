@@ -361,3 +361,4 @@ Stream live structured logs. Authenticated via the `SERVICE_NAME` env var
 | `/admin/sites/*` | various | Site CRUD + PBX mappings. Requires `X-Admin-Key`. |
 | `/admin/bicom-systems/*` | various | Bicom PBX CRUD + ARI secret rotation. Requires `X-Admin-Key`. |
 | `/admin/pbx/*` | various | PBX manager status + reload. Requires `X-Admin-Key`. |
+| `/admin/tenants/{id}/capabilities` | GET | Per-tenant runtime capability flags (PMS protocol + PBX supports_wake_up_calls / voicemail_greeting / call_forward / mwi / dnd / inbound_events). Useful for spotting misconfigurations (e.g. Zultys tenant receiving PMS wake-up events). Requires `X-Admin-Key`. |
