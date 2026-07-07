@@ -4,6 +4,12 @@ Single-page index of every data flow in the service, with the
 mermaid diagrams inline. Read this first if you're onboarding; each
 section points at the canonical doc for the long-form description.
 
+Mermaid conventions used in this file:
+- Node labels in flowcharts may use `<br/>` for line breaks.
+- Edge labels are single-line only.
+- Sequence diagram messages may use `<br/>` for line breaks.
+- Participant aliases in sequence diagrams are single-line.
+
 ---
 
 ## 1. System Topology
@@ -14,21 +20,21 @@ supported PMS / PBX shapes.
 ```mermaid
 flowchart TB
     subgraph Hotel["Hotel site"]
-        PMS[PMS<br/>Mitel / FIAS / TigerTMS / Mews / Cloudbeds]
-        SC[site-connector<br/>PMS listener agent]
+        PMS["PMS - Mitel / FIAS / TigerTMS / Mews / Cloudbeds"]
+        SC["site-connector - PMS listener agent"]
     end
 
     subgraph Cloud["Hospitality service"]
-        API[/Fiber HTTP<br/>REST + Admin API/]
-        TM[Tenant Manager<br/>per-tenant pipeline]
-        Sched[WakeUpScheduler<br/>in-process, 10s tick]
-        DB[(PostgreSQL<br/>sites · tenants<br/>rooms · sessions<br/>pms_events · wakeup_calls)]
+        API["Fiber HTTP - REST + Admin API"]
+        TM["Tenant Manager - per-tenant pipeline"]
+        Sched["WakeUpScheduler - in-process, 10s tick"]
+        DB[("PostgreSQL - sites, tenants, rooms, sessions, pms_events, wakeup_calls")]
     end
 
     subgraph PBX["PBX"]
-        Bicom[Bicom PBXware<br/>ARI + REST API]
-        Zultys[Zultys MX<br/>REST + Webhook]
-        FS[FreeSWITCH<br/>sidecar<br/>(planned for Zultys wake-up)]
+        Bicom["Bicom PBXware - ARI + REST API"]
+        Zultys["Zultys MX - REST + Webhook"]
+        FS["FreeSWITCH sidecar - planned for Zultys wake-up"]
     end
 
     PMS -. "TCP (FIAS, Mitel)" .-> SC
@@ -58,13 +64,13 @@ How a single PMS event flows from the wire into a PBX action.
 
 ```mermaid
 flowchart LR
-    P[PMS wire<br/>TCP socket or HTTP push]
-    A[pms.Adapter<br/>parse + ACK]
-    TM[tenant.handleEvent]
-    DB[(pms_events<br/>audit log)]
+    P["PMS wire - TCP socket or HTTP push"]
+    A["pms.Adapter - parse + ACK"]
+    TM["tenant.handleEvent"]
+    DB[("pms_events - audit log")]
     H{{Event type}}
-    PBX[pbx.Provider]
-    GS[(guest_sessions)]
+    PBX["pbx.Provider"]
+    GS[("guest_sessions")]
 
     P --> A
     A --> TM
@@ -86,26 +92,26 @@ Canonical docs: [architecture.md#event-processor](architecture.md).
 ```mermaid
 sequenceDiagram
     autonumber
-    participant PMS as PMS
-    participant Adapter as pms.Adapter
-    participant Tenant as Tenant.handleWakeUp
-    participant REST as Bicom REST API
-    participant DB as wakeup_calls
-    participant Sched as WakeUpScheduler
-    participant ARI as ARI / SIP
+    participant PMS
+    participant Adapter as "pms.Adapter"
+    participant Tenant as "Tenant.handleWakeUp"
+    participant REST as "Bicom REST API"
+    participant DB as "wakeup_calls"
+    participant Sched as "WakeUpScheduler"
+    participant ARI as "ARI / SIP"
 
-    PMS->>Adapter: wake-up event<br/>Metadata: {TI / wakeup_time / TI_RAW}
-    Adapter->>Tenant: pms.Event{Type: EventWakeUp}
-    Tenant->>Tenant: parseWakeUpTime(timeStr) → time.Time
+    PMS->>Adapter: wake-up event with metadata TI / wakeup_time / TI_RAW
+    Adapter->>Tenant: pms.Event type EventWakeUp
+    Tenant->>Tenant: parseWakeUpTime to time.Time
     Tenant->>REST: POST pbxware.ext.es.opwakeupcall.set state=yes
-    REST-->>Tenant: {success: true}
-    Tenant->>DB: INSERT wakeup_calls status='pending'
+    REST-->>Tenant: success true
+    Tenant->>DB: INSERT wakeup_calls status=pending
     Note over Sched: tick every 10s
-    Sched->>DB: SELECT pending where scheduled_at <= NOW()
-    Sched->>ARI: Channels.Originate(<br/>endpoint=PJSIP/{ext},<br/>App=wakeup, Timeout=30s)
+    Sched->>DB: SELECT pending where scheduled_at <= NOW
+    Sched->>ARI: Channels.Originate endpoint PJSIP/ext App wakeup Timeout 30s
     ARI-->>Sched: channel accepted
-    Sched->>DB: UPDATE status='originated', originated_at=NOW()
-    Note over ARI: rings the room; Stasis app can play greeting
+    Sched->>DB: UPDATE status=originated originated_at=NOW
+    Note over ARI: rings the room, Stasis app can play greeting
 ```
 
 Canonical doc: [pbx-providers.md#wake-up-call-pipeline-tier-0--tier-1](pbx-providers.md).
@@ -117,20 +123,20 @@ Canonical doc: [pbx-providers.md#wake-up-call-pipeline-tier-0--tier-1](pbx-provi
 ```mermaid
 sequenceDiagram
     autonumber
-    participant PMS as PMS
-    participant Tenant as Tenant.handleEvent
-    participant PBX as pbx.Provider
-    participant DB as PostgreSQL
-    participant ARI as ARI / SIP
+    participant PMS
+    participant Tenant as "Tenant.handleEvent"
+    participant PBX as "pbx.Provider"
+    participant DB as "PostgreSQL"
+    participant ARI as "ARI / SIP"
 
-    PMS->>Tenant: pms.Event{Type: EventCheckOut, Room: 101}
-    Tenant->>PBX: UpdateExtensionName(ext, "")
-    Tenant->>PBX: ClearVoicemailForGuest(ext)<br/>(delete + reset greeting)
-    Tenant->>PBX: CancelWakeUpCall(ext)
-    Tenant->>DB: FindPendingWakeUpCall(tenant, room)
-    Tenant->>DB: UPDATE wakeup_calls SET status='cancelled'
-    Tenant->>PBX: SetMWI(ext, off)
-    Tenant->>DB: UPDATE guest_sessions SET check_out=NOW()
+    PMS->>Tenant: pms.Event type EventCheckOut Room 101
+    Tenant->>PBX: UpdateExtensionName ext empty
+    Tenant->>PBX: ClearVoicemailForGuest ext (delete + reset greeting)
+    Tenant->>PBX: CancelWakeUpCall ext
+    Tenant->>DB: FindPendingWakeUpCall tenant room
+    Tenant->>DB: UPDATE wakeup_calls SET status=cancelled
+    Tenant->>PBX: SetMWI ext off
+    Tenant->>DB: UPDATE guest_sessions SET check_out=NOW
 ```
 
 Canonical doc: [architecture.md#check-out-flow-cleanup--db-end-of-session](architecture.md).
@@ -142,17 +148,17 @@ Canonical doc: [architecture.md#check-out-flow-cleanup--db-end-of-session](archi
 ```mermaid
 sequenceDiagram
     autonumber
-    participant PBX as PBX (Zultys / Bicom)
-    participant API as /api/v1/pbx/webhook/{tenant}
-    participant Provider as pbx.Provider<br/>(WebhookProvider)
-    participant Tenant as Tenant Event Processor
+    participant PBX as "PBX (Zultys / Bicom)"
+    participant API as "HTTP /api/v1/pbx/webhook/{tenant}"
+    participant Provider as "pbx.Provider (WebhookProvider)"
+    participant Tenant as "Tenant Event Processor"
 
-    PBX->>API: POST {event:"voicemail_left", extension:"1101"}
-    API->>Provider: HandleWebhook(req)
+    PBX->>API: POST voicemail_left extension 1101
+    API->>Provider: HandleWebhook
     Provider->>Provider: validate HMAC signature
     Provider->>Provider: mapWebhookEventToCallEvent
-    Provider-->>Tenant: events <- CallEvent{Type: VoicemailLeft}
-    Tenant->>Tenant: (currently logs only — Tier 2 wires MWI back to PMS)
+    Provider-->>Tenant: events channel CallEvent VoicemailLeft
+    Note over Tenant: currently logs only - Tier 2 wires MWI back to PMS
 ```
 
 Canonical doc: [architecture.md#pbx--pms-reverse-flow-voicemail-webhook--mwi](architecture.md).
@@ -164,15 +170,15 @@ Canonical doc: [architecture.md#pbx--pms-reverse-flow-voicemail-webhook--mwi](ar
 ```mermaid
 sequenceDiagram
     autonumber
-    participant PMS as PMS (FIAS / Mitel)
-    participant Listener as site-connector Listener
-    participant Buffer as Spool Buffer (disk)
-    participant Output as Resilient Output
-    participant API as Hospitality /api/v1/pbx/webhook/{site}
+    participant PMS as "PMS (FIAS / Mitel)"
+    participant Listener as "site-connector Listener"
+    participant Buffer as "Spool Buffer (disk)"
+    participant Output as "Resilient Output"
+    participant API as "Hospitality webhook endpoint"
 
-    PMS->>Listener: GI|RN1015|GNSmith|
-    Listener->>Listener: parse → pms.Event{Type: CheckIn}
-    Listener->>Output: EventEnvelope{protocol, event}
+    PMS->>Listener: GI record RN1015 GNSmith
+    Listener->>Listener: parse to pms.Event type CheckIn
+    Listener->>Output: EventEnvelope protocol and event
     alt URL reachable
         Output->>API: POST (HTTPS or WSS)
         API-->>Output: 200 OK
@@ -190,21 +196,21 @@ Canonical doc: [architecture.md#site-connector-forwarding-flow](architecture.md)
 
 ```mermaid
 flowchart LR
-    subgraph Connect["Client mode (we connect to PMS)"]
-        C_FIAS["fias.Adapter<br/>→ tcp:PMS:5000"]
-        C_MITEL["mitel.Adapter<br/>→ tcp:PMS:23"]
+    subgraph Connect["Client mode - we connect to PMS"]
+        C_FIAS["fias.Adapter<br/>tcp to PMS port 5000"]
+        C_MITEL["mitel.Adapter<br/>tcp to PMS port 23"]
     end
 
-    subgraph Server["Server mode (PMS connects to us)"]
-        S_FIAS["listener.FiasListener<br/>tcp:0.0.0.0:5000"]
-        S_MITEL["listener.MitelListener<br/>tcp:0.0.0.0:23"]
+    subgraph Server["Server mode - PMS connects to us"]
+        S_FIAS["listener.FiasListener<br/>tcp 0.0.0.0 port 5000"]
+        S_MITEL["listener.MitelListener<br/>tcp 0.0.0.0 port 23"]
     end
 
-    subgraph Push["HTTP push (middleware POSTs)"]
+    subgraph Push["HTTP push - middleware POSTs"]
         T_TIGER["tigertms.Handler<br/>POST /tigertms/{tenant}/API/*"]
     end
 
-    PMS[PMS / Middleware]
+    PMS["PMS / Middleware"]
 
     PMS -- "TCP" --> C_FIAS
     PMS -- "TCP" --> C_MITEL
@@ -219,30 +225,66 @@ Canonical doc: [protocols.md](protocols.md).
 
 ## 8. PBX Capability Surface
 
-| Capability | Bicom | Zultys |
-|---|---|---|
-| `SupportsWakeUpCalls` | ✅ (state toggle) | ❌ |
-| `SupportsWakeUpOrigination` | ✅ (ARI Channels.Originate) | ❌ |
-| `SupportsVoicemailGreeting` | ✅ | ✅ |
-| `SupportsCallForward` | ✅ | ✅ |
-| `SupportsMWI` | ✅ | ✅ |
-| `SupportsDND` | ✅ | ✅ |
-| `SupportsInboundEvents` | ✅ (ARI) | ✅ (webhook) |
+```mermaid
+flowchart LR
+    subgraph Lifecycle["Lifecycle methods"]
+        L1["Connect / Close / Connected"]
+    end
+
+    subgraph Common["Common operations"]
+        C1["UpdateExtensionName"]
+        C2["SetMWI"]
+        C3["SetDND"]
+        C4["SetCallForward"]
+        C5["ClearVoicemailForGuest"]
+    end
+
+    subgraph Wakeup["Wake-up calls"]
+        W1["ScheduleWakeUpCall<br/>state toggle only"]
+        W2["OriginateWakeUp<br/>fires the actual call"]
+    end
+
+    IFACE["pbx.Provider interface"]
+
+    Bicom["bicom.Provider"]
+    Zultys["zultys.Provider"]
+
+    IFACE -- Lifecycle --> Bicom
+    IFACE -- Lifecycle --> Zultys
+
+    IFACE -- Common operations --> Bicom
+    IFACE -- Common operations --> Zultys
+
+    IFACE -- W1 --> Bicom
+    IFACE -- W1 --> Zultys
+    IFACE -- W2 --> Bicom
+    IFACE -- W2 --> Zultys
+
+    Bicom -- "W1 returns success (state=yes)" --> Note1["Bicom REST accepts<br/>state toggle"]
+    Bicom -- "W2 returns ARI originate success" --> Note2["ARI Channels.Originate<br/>to the extension"]
+    Zultys -- "W1 returns ErrWakeUpNotSupported" --> Note3["Zultys has no wake-up API"]
+    Zultys -- "W2 returns ErrOriginateNotSupported" --> Note4["Zultys has no SIP originate"]
+```
+
+See the [Bicom](#bicom-capabilities) and [Zultys](#zultys-capabilities)
+sections below for the full capability matrix.
+
+### Bicom capabilities
 
 ```mermaid
 flowchart LR
-    IFACE[pbx.Provider interface]
-    Bicom[bicom.Provider]
-    Zultys[zultys.Provider]
+    B["bicom.Provider"]
+    CapB["SupportsWakeUpCalls - YES if apiClient<br/>SupportsWakeUpOrigination - YES if ariClient<br/>SupportsVoicemailGreeting - YES<br/>SupportsCallForward - YES<br/>SupportsMWI - YES<br/>SupportsDND - YES<br/>SupportsInboundEvents - YES if ARI URL set"]
+    B --> CapB
+```
 
-    IFACE -- "Connect / Close / Connected" --> Bicom
-    IFACE -- "Connect / Close / Connected" --> Zultys
-    IFACE -- "UpdateExt / SetMWI / SetDND /<br/>SetCallForward / SetVoicemailGreeting" --> Bicom
-    IFACE -- "UpdateExt / SetMWI / SetDND /<br/>SetCallForward / SetVoicemailGreeting" --> Zultys
-    IFACE -- "ScheduleWakeUpCall (state toggle)" --> Bicom
-    IFACE -- "ScheduleWakeUpCall → ErrWakeUpNotSupported" --> Zultys
-    IFACE -- "OriginateWakeUp via ARI" --> Bicom
-    IFACE -- "OriginateWakeUp → ErrOriginateNotSupported" --> Zultys
+### Zultys capabilities
+
+```mermaid
+flowchart LR
+    Z["zultys.Provider"]
+    CapZ["SupportsWakeUpCalls - NO<br/>SupportsWakeUpOrigination - NO<br/>SupportsVoicemailGreeting - YES<br/>SupportsCallForward - YES<br/>SupportsMWI - YES<br/>SupportsDND - YES<br/>SupportsInboundEvents - YES"]
+    Z --> CapZ
 ```
 
 Canonical doc: [pbx-providers.md](pbx-providers.md).
@@ -252,43 +294,19 @@ Canonical doc: [pbx-providers.md](pbx-providers.md).
 ## 9. Admin API Surface
 
 ```mermaid
-graph LR
-    subgraph Tenants["/admin/tenants"]
-        T1[CRUD]
-        T2[/:id/rooms/]
-        T3[/:id/sessions/]
-        T4[/:id/events/]
-        T5[/:id/wakeups/]
-        T6[/:id/health]
-        T7[/:id/capabilities]
-        T8[/import]
-    end
+flowchart TB
+    Tenants["/admin/tenants - CRUD + per-tenant sub-resources"]
+    Sites["/admin/sites - CRUD + per-site Bicom mappings"]
+    BicomSys["/admin/bicom-systems - CRUD + ARI secret rotation"]
+    PBXMgr["/admin/pbx - status + reload"]
+    Inbound["Inbound PMS endpoints - TigerTMS routes + admin API key"]
+    WS["/ws/logs - WebSocket log tail"]
 
-    subgraph Sites["/admin/sites"]
-        S1[CRUD]
-        S2[/:id/bicom]
-        S3[/:id/health]
-    end
-
-    subgraph PBX["/admin/bicom-systems"]
-        B1[CRUD]
-        B2[/:id/ari-secret]
-    end
-
-    subgraph Mgr["/admin/pbx"]
-        M1[GET /status]
-        M2[POST /reload]
-        M3[POST /:id/reload]
-    end
-
-    Inbound[Inbound PMS endpoints]
-    WS[/ws/logs]
-
-    Tenants --- Sites
-    Sites --- PBX
-    PBX --- Mgr
-    Mgr --- Inbound
-    Inbound --- WS
+    Tenants --> Sites
+    Sites --> BicomSys
+    BicomSys --> PBXMgr
+    PBXMgr --> Inbound
+    Inbound --> WS
 ```
 
 Canonical docs: [api-reference.md](api-reference.md), [admin-api.md](admin-api.md).
@@ -368,7 +386,9 @@ erDiagram
     }
 ```
 
-Canonical docs: [migrations/001_schema.sql](../migrations/001_schema.sql), [migrations/003_wakeup_calls.sql](../migrations/003_wakeup_calls.sql), [architecture.md](../docs/architecture.md).
+Canonical docs: [migrations/001_schema.sql](../migrations/001_schema.sql),
+[migrations/003_wakeup_calls.sql](../migrations/003_wakeup_calls.sql),
+[architecture.md](../docs/architecture.md).
 
 ---
 

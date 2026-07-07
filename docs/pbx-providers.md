@@ -122,25 +122,25 @@ curl -H "X-Admin-Key: $KEY" http://localhost:8080/admin/tenants/hotel-alpha/capa
 ```mermaid
 sequenceDiagram
     autonumber
-    participant PMS as PMS<br/>(FIAS / TigerTMS / Mitel / Mews / Cloudbeds)
+    participant PMS
     participant Adapter as PMS Adapter
     participant Tenant as Tenant.handleWakeUp
     participant REST as Bicom REST API
     participant DB as wakeup_calls table
-    participant Sched as WakeUpScheduler<br/>(in-process)
+    participant Sched as WakeUpScheduler
     participant ARI as ARI / SIP
 
     PMS->>Adapter: wake-up event with time
-    Adapter->>Tenant: pms.Event{Type: EventWakeUp,<br/>Metadata: {TI / wakeup_time / TI_RAW}}
-    Tenant->>REST: POST pbxware.ext.es.opwakeupcall.set<br/>id={ext}&state=yes
+    Adapter->>Tenant: pms.Event type EventWakeUp
+    Tenant->>REST: POST pbxware.ext.es.opwakeupcall.set state yes
     REST-->>Tenant: success
-    Tenant->>DB: INSERT wakeup_calls status='pending'
+    Tenant->>DB: INSERT wakeup_calls status pending
     Note over Sched: tick every 10s
-    Sched->>DB: SELECT pending where scheduled_at <= NOW()
-    Sched->>ARI: Channels.Originate(<br/>endpoint=PJSIP/{ext},<br/>App=wakeup, AppArgs={ext},<br/>Timeout=30s)
+    Sched->>DB: SELECT pending where scheduled_at <= NOW
+    Sched->>ARI: Channels.Originate endpoint PJSIP/ext App wakeup Timeout 30s
     ARI-->>Sched: channel accepted
-    Sched->>DB: UPDATE status='originated', originated_at=NOW()
-    Note over ARI: rings the room; Stasis app can play greeting
+    Sched->>DB: UPDATE status originated originated_at NOW
+    Note over ARI: rings the room, Stasis app can play greeting
 ```
 
 **Operator setup required:** register a Stasis app named `wakeup` in

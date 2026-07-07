@@ -334,18 +334,18 @@ sequenceDiagram
     participant REST as PBX REST API
     participant DB as PostgreSQL
 
-    PMS->>Adapter: <STX>CHK1 2129<ETX>
-    Adapter->>Processor: pms.Event{Type: CheckIn, Room: 2129}
+    PMS->>Adapter: STX CHK1 2129 ETX
+    Adapter->>Processor: pms.Event type CheckIn, room 2129
     Processor->>Mapper: GetExtension("hotel-a", "2129")
     Mapper->>DB: SELECT FROM room_mappings ...
-    DB-->>Mapper: extension=12129
-    Mapper-->>Processor: "12129"
-    Processor->>PBX: UpdateExtensionName(ctx, "12129", guestName)
-    PBX->>REST: pbxware.ext.edit?id=12129&name=...
+    DB-->>Mapper: extension 12129
+    Mapper-->>Processor: 12129
+    Processor->>PBX: UpdateExtensionName(ctx, 12129, guestName)
+    PBX->>REST: pbxware.ext.edit id 12129 name guest
     REST-->>PBX: success
-    Processor->>DB: INSERT INTO guest_sessions (room=2129, extension=12129, check_in=NOW())
-    Processor->>Adapter: SendAck()
-    Adapter->>PMS: <ACK>
+    Processor->>DB: INSERT INTO guest_sessions
+    Processor->>Adapter: SendAck
+    Adapter->>PMS: ACK
 ```
 
 #### Check-Out Flow (cleanup + DB end-of-session)
@@ -359,18 +359,18 @@ sequenceDiagram
     participant ARI as ARI / REST API
     participant DB as PostgreSQL
 
-    PMS->>Adapter: <STX>CHK0 2129<ETX>
-    Adapter->>Processor: pms.Event{Type: CheckOut, Room: 2129}
-    Processor->>PBX: UpdateExtensionName(ctx, ext, "")
+    PMS->>Adapter: STX CHK0 2129 ETX
+    Adapter->>Processor: pms.Event type CheckOut, room 2129
+    Processor->>PBX: UpdateExtensionName(ctx, ext, empty)
     PBX->>ARI: clear caller-ID name
     Processor->>PBX: ClearVoicemailForGuest(ctx, ext)
-    PBX->>ARI: vm.delete_all + greeting reset
+    PBX->>ARI: vm.delete_all plus greeting reset
     Processor->>PBX: CancelWakeUpCall(ctx, ext)
-    PBX->>ARI: ext.es.wakeupcall.edit enabled=0
+    PBX->>ARI: ext.es.wakeupcall.set state no
     Processor->>PBX: SetMWI(ctx, ext, false)
-    PBX->>ARI: mailbox update (lamp off)
-    Processor->>DB: UPDATE guest_sessions SET check_out=NOW() WHERE room=2129 AND check_out IS NULL
-    Processor->>Adapter: SendAck()
+    PBX->>ARI: mailbox update, lamp off
+    Processor->>DB: UPDATE guest_sessions SET check_out=NOW()
+    Processor->>Adapter: SendAck
 ```
 
 #### Wake-Up Call Flow (PMS-driven, Bicom + ARI)
@@ -378,27 +378,28 @@ sequenceDiagram
 ```mermaid
 sequenceDiagram
     autonumber
-    participant PMS as PMS<br/>(FIAS / TigerTMS / Mitel / ASIP / Mews / Cloudbeds)
+    participant PMS
     participant Adapter as PMS Adapter
     participant Tenant as Tenant Manager
     participant BicomAPI as Bicom REST API
-    participant Sched as WakeUpScheduler<br/>(in-process)
+    participant Sched as WakeUpScheduler
     participant DB as wakeup_calls table
     participant ARI as ARI / SIP
 
-    Note over PMS,ARI: Two-part: state toggle via REST, ring via ARI
+    Note over PMS,ARI: Two-part - state toggle via REST, ring via ARI
     PMS->>Adapter: wake-up event with time
-    Adapter->>Tenant: pms.Event{Type: EventWakeUp,<br/>Metadata: {TI / wakeup_time / TI_RAW}}
-    Tenant->>Tenant: parseWakeUpTime → time.Time
-    Tenant->>BicomAPI: POST pbxware.ext.es.opwakeupcall.set<br/>id={ext}&state=yes
-    BicomAPI-->>Tenant: {success:true}
+    Adapter->>Tenant: pms.Event type EventWakeUp
+    Tenant->>Tenant: parseWakeUpTime to time.Time
+    Tenant->>BicomAPI: POST pbxware.ext.es.opwakeupcall.set state yes
+    BicomAPI-->>Tenant: success true
     Tenant->>Sched: Schedule(ext, time, tenantID)
-    Sched->>DB: INSERT wakeup_calls status='pending'
+    Sched->>DB: INSERT wakeup_calls status pending
     Note over Sched: tick every 10s
-    Sched->>DB: SELECT pending where scheduled_at <= now()
-    Sched->>ARI: Channels.Originate(ext=room, app=wakeup,<br/>args=greeting-url)
-    ARI-->>Sched: Channel answered, hangup
-    Sched->>DB: UPDATE status='completed'
+    Sched->>DB: SELECT pending where scheduled_at <= now
+    Sched->>ARI: Channels.Originate endpoint PJSIP/ext app wakeup timeout 30s
+    ARI-->>Sched: channel accepted
+    Sched->>DB: UPDATE status originated originated_at NOW
+    Note over ARI: rings the room, Stasis app can play greeting
 ```
 
 #### PBX-side voicemail → PMS-side MWI (when reverse webhook is configured)
@@ -406,17 +407,17 @@ sequenceDiagram
 ```mermaid
 sequenceDiagram
     participant PBX as PBX (Zultys / Bicom)
-    participant API as /api/v1/pbx/webhook/{tenant}
-    participant Provider as PBX Provider<br/>(implements WebhookProvider)
+    participant API as HTTP webhook endpoint
+    participant Provider as PBX Provider (WebhookProvider)
     participant Tenant as Tenant Event Processor
     participant PMS as PMS Adapter
 
-    PBX->>API: POST {event:"voicemail_left", extension:"1101", ...}
-    API->>Provider: HandleWebhook(req)
+    PBX->>API: POST voicemail_left extension 1101
+    API->>Provider: HandleWebhook
     Provider->>Provider: validate HMAC signature
     Provider->>Provider: mapWebhookEventToCallEvent
-    Provider-->>Tenant: events <- CallEvent{Type: VoicemailLeft}
-    Tenant->>PMS: emit pms.Event{Type: MessageWaiting, Status: true}
+    Provider-->>Tenant: events channel CallEvent VoicemailLeft
+    Tenant->>PMS: emit pms.Event type MessageWaiting status true
 ```
 
 #### `site-connector` Forwarding Flow
@@ -425,13 +426,13 @@ sequenceDiagram
 sequenceDiagram
     participant PMS as PMS (FIAS / Mitel)
     participant Listener as site-connector Listener
-    participant Buffer as Spool Buffer (disk)
+    participant Buffer as Spool Buffer on disk
     participant Output as Resilient Output
-    participant API as Hospitality /api/v1/pbx/webhook/{site}
+    participant API as Hospitality webhook endpoint
 
-    PMS->>Listener: GI|RN1015|GNSmith|
-    Listener->>Listener: parse → pms.Event{Type: CheckIn}
-    Listener->>Output: EventEnvelope{protocol, event}
+    PMS->>Listener: GI RN1015 GNSmith
+    Listener->>Listener: parse to pms.Event type CheckIn
+    Listener->>Output: EventEnvelope with protocol and event
     alt URL reachable
         Output->>API: POST (HTTPS or WSS)
         API-->>Output: 200 OK

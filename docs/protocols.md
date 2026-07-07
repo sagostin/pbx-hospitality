@@ -9,21 +9,21 @@ Bicom Hospitality Integration. The current code lives in
 
 ```mermaid
 flowchart LR
-    subgraph Connect["Client mode (we connect to PMS)"]
-        C_FIAS["fias.Adapter<br/>Connect → tcp:PMS:5000"]
-        C_MITEL["mitel.Adapter<br/>Connect → tcp:PMS:23"]
+    subgraph Connect["Client mode - we connect to PMS"]
+        C_FIAS["fias.Adapter<br/>Connect to PMS port 5000"]
+        C_MITEL["mitel.Adapter<br/>Connect to PMS port 23"]
     end
 
-    subgraph Server["Server mode (PMS connects to us)"]
-        S_FIAS["listener.FiasListener<br/>tcp:0.0.0.0:5000"]
-        S_MITEL["listener.MitelListener<br/>tcp:0.0.0.0:23"]
+    subgraph Server["Server mode - PMS connects to us"]
+        S_FIAS["listener.FiasListener<br/>listen on 0.0.0.0 port 5000"]
+        S_MITEL["listener.MitelListener<br/>listen on 0.0.0.0 port 23"]
     end
 
-    subgraph Push["HTTP push (middleware POSTs to us)"]
+    subgraph Push["HTTP push - middleware POSTs to us"]
         T_TIGER["tigertms.Handler<br/>POST /tigertms/{tenant}/API/*"]
     end
 
-    PMS[PMS /<br/>Middleware]
+    PMS["PMS / Middleware"]
 
     PMS -- "TCP connect" --> C_FIAS
     PMS -- "TCP connect" --> C_MITEL

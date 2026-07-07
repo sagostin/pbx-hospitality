@@ -34,15 +34,15 @@ With TigerTMS, **we expose HTTP endpoints** that receive events from the middlew
 
 ```mermaid
 flowchart LR
-    PMS[Hotel PMS<br/>Opera / Shiji / Cloudbeds / Mews]
-    ILink[TigerTMS iLink<br/>Middleware]
-    Service[Bicom Hospitality<br/>HTTP endpoints<br/>POST /tigertms/{tenant}/API/*]
-    PBX[Bicom PBXware<br/>ARI + REST API]
+    PMS["Hotel PMS<br/>Opera / Shiji / Cloudbeds / Mews"]
+    ILink["TigerTMS iLink<br/>Middleware"]
+    Service["Bicom Hospitality<br/>HTTP endpoints<br/>POST /tigertms/{tenant}/API/STAR"]
+    PBX["Bicom PBXware<br/>ARI + REST API"]
 
     PMS -- "PMS-native protocol" --> ILink
     ILink -- "HTTPS push" --> Service
     Service -- "REST API + ARI" --> PBX
-    PBX -- "voicemail/webhook (reverse)" --> Service
+    PBX -- "voicemail webhook (reverse)" --> Service
 ```
 
 TigerTMS iLink:
