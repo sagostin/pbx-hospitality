@@ -197,12 +197,13 @@ func (p *Provider) Connected() bool {
 // Capabilities returns what this provider supports
 func (p *Provider) Capabilities() pbx.Capabilities {
 	return pbx.Capabilities{
-		SupportsWakeUpCalls:       p.apiClient != nil,
+		SupportsWakeUpCalls:        p.apiClient != nil,
+		SupportsWakeUpOrigination:  p.ariClient != nil, // via ARI Channels.Originate
 		SupportsVoicemailGreeting: p.apiClient != nil,
-		SupportsCallForward:       p.apiClient != nil,
-		SupportsMWI:               true,               // via ARI or API
-		SupportsDND:               true,               // via ARI or API
-		SupportsInboundEvents:     p.cfg.ARIURL != "", // via ARI WebSocket or HTTP webhook
+		SupportsCallForward:        p.apiClient != nil,
+		SupportsMWI:                true,               // via ARI or API
+		SupportsDND:                true,               // via ARI or API
+		SupportsInboundEvents:      p.cfg.ARIURL != "", // via ARI WebSocket or HTTP webhook
 	}
 }
 
@@ -326,6 +327,54 @@ func (p *Provider) CancelWakeUpCall(ctx context.Context, ext string) error {
 		return fmt.Errorf("Bicom API not configured")
 	}
 	return p.apiClient.CancelWakeUpCall(ctx, ext)
+}
+
+// OriginateWakeUp places a wake-up call to the extension via ARI.
+//
+// Bicom's REST API can only toggle wake-up state (no time parameter), so
+// the actual ring-at-HH:MM is performed by the WakeUpScheduler calling
+// this method at the scheduled time. The call originates to the extension
+// and is dropped into the "wakeup" ARI application; the dialplan or a
+// Stasis handler can then play a greeting and hang up.
+//
+// greetingURL is accepted for interface compatibility. The Bicom provider
+// currently does not auto-upload greeting media; operators should
+// configure the dialplan / Stasis app to play a per-tenant greeting
+// (recorded once and stored on the PBX).
+//
+// Returns nil when the originate request was accepted by Asterisk.
+// Completion tracking is owned by the WakeUpScheduler via the wakeup_calls
+// table — this method only signals "fire" success.
+func (p *Provider) OriginateWakeUp(ctx context.Context, ext, greetingURL string) error {
+	p.ariMu.RLock()
+	client := p.ariClient
+	p.ariMu.RUnlock()
+
+	if client == nil {
+		return fmt.Errorf("Bicom ARI not configured")
+	}
+
+	req := ari.OriginateRequest{
+		Endpoint: "PJSIP/" + ext,
+		Timeout:  30,
+		CallerID: "Wake-up Call",
+		// Drop the new channel into the "wakeup" Stasis app so the dialplan
+		// (or a Stasis handler) can play a greeting and hang up.
+		App:     "wakeup",
+		AppArgs: ext,
+	}
+
+	ch, err := client.Channel().Originate(nil, req)
+	if err != nil {
+		return fmt.Errorf("originate wake-up to %s: %w", ext, err)
+	}
+
+	log.Info().
+		Str("extension", ext).
+		Str("channel_id", ch.ID()).
+		Msg("Bicom wake-up call originated via ARI")
+
+	return nil
 }
 
 // =============================================================================

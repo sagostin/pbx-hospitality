@@ -26,6 +26,10 @@ import (
 // ErrWakeUpNotSupported is returned when wake-up calls are attempted on Zultys
 var ErrWakeUpNotSupported = errors.New("wake-up calls not supported on Zultys (requires external scheduler or migration to Bicom)")
 
+// ErrOriginateNotSupported is returned by OriginateWakeUp on Zultys. The
+// WakeUpScheduler uses it to mark a wakeup_calls row as failed.
+var ErrOriginateNotSupported = errors.New("wake-up origination not supported on Zultys (use a FreeSWITCH sidecar or migrate to Bicom)")
+
 // wakeUpUnsupportedTotal counts wake-up requests rejected because the PBX
 // provider does not support them. Surfaced as
 // `hospitality_pbx_wakeup_unsupported_total{pbx,action}`.
@@ -125,7 +129,8 @@ func (p *Provider) Connected() bool {
 // Capabilities returns what this provider supports
 func (p *Provider) Capabilities() pbx.Capabilities {
 	return pbx.Capabilities{
-		SupportsWakeUpCalls:       false, // Requires external scheduler (e.g., FreeSWITCH)
+		SupportsWakeUpCalls:        false, // Requires external scheduler
+		SupportsWakeUpOrigination:  false, // No API to place SIP calls
 		SupportsVoicemailGreeting: true,
 		SupportsCallForward:       true,
 		SupportsMWI:               true,
@@ -510,6 +515,20 @@ func (p *Provider) CancelWakeUpCall(ctx context.Context, ext string) error {
 			"See ROADMAP.md for migration options.")
 	wakeUpUnsupportedTotal.WithLabelValues("zultys", "cancel").Inc()
 	return ErrWakeUpNotSupported
+}
+
+// OriginateWakeUp is not supported on Zultys.
+//
+// Zultys does not expose an API for placing SIP calls. Wake-up on Zultys
+// requires an external scheduler (e.g. a FreeSWITCH sidecar that
+// originates SIP into the Zultys and plays a greeting). See ROADMAP.md
+// for the planned integration.
+func (p *Provider) OriginateWakeUp(ctx context.Context, ext, greetingURL string) error {
+	log.Error().
+		Str("extension", ext).
+		Msg("Zultys does not support wake-up origination; WakeUpScheduler will fail this row.")
+	wakeUpUnsupportedTotal.WithLabelValues("zultys", "originate").Inc()
+	return ErrOriginateNotSupported
 }
 
 // SetCallForward configures call forwarding for an extension

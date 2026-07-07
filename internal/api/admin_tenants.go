@@ -4,6 +4,7 @@ import (
 	"encoding/json"
 	"io"
 	"regexp"
+	"strconv"
 
 	"github.com/gofiber/fiber/v2"
 	"github.com/rs/zerolog/log"
@@ -536,6 +537,35 @@ func (s *AdminServer) retryTenantEvent(c *fiber.Ctx) error {
 		"event_id": id,
 		"tenant":   tenantID,
 	})
+}
+
+// listTenantWakeUps returns the most recent wake-up calls for a tenant.
+// Includes pending, originated, completed, failed, and cancelled rows.
+func (s *AdminServer) listTenantWakeUps(c *fiber.Ctx) error {
+	if s.db == nil {
+		return writeError(c, "database not configured", "DB_NOT_CONFIGURED", fiber.StatusServiceUnavailable)
+	}
+
+	tenantID := c.Params("id")
+	if !validateTenantID(tenantID) {
+		return writeError(c, "invalid tenant ID format", "INVALID_ID", fiber.StatusBadRequest)
+	}
+
+	limit := 50
+	if l := c.Query("limit"); l != "" {
+		if parsed, err := strconv.Atoi(l); err == nil && parsed > 0 && parsed <= 500 {
+			limit = parsed
+		}
+	}
+
+	calls, err := s.db.ListWakeUpCalls(c.Context(), tenantID, limit)
+	if err != nil {
+		log.Error().Err(err).Str("tenant", tenantID).Msg("Failed to list wake-up calls")
+		return writeError(c, "failed to list wake-ups", "INTERNAL_ERROR", fiber.StatusInternalServerError)
+	}
+
+	c.Set("Content-Type", "application/json")
+	return c.JSON(calls)
 }
 
 // getTenantCapabilities reports the runtime capabilities of the tenant's

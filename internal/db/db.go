@@ -160,6 +160,38 @@ func (PMSEvent) TableName() string {
 	return "pms_events"
 }
 
+// WakeUpCall is the durable record of a scheduled wake-up that the
+// WakeUpScheduler will fire via ARI at ScheduledAt. The row is created by
+// tenant.handleWakeUp after a successful ScheduleWakeUpCall on the PBX
+// provider; the scheduler picks it up, calls pbx.Provider.OriginateWakeUp,
+// then transitions status to "originated" / "completed" / "failed".
+type WakeUpCall struct {
+	ID           int64      `gorm:"primaryKey;autoIncrement"`
+	TenantID     string     `gorm:"column:tenant_id;size:64;not null;index:idx_wakeup_tenant"`
+	Extension    string     `gorm:"size:32;not null"`
+	ScheduledAt  time.Time  `gorm:"column:scheduled_at;not null;index:idx_wakeup_due"`
+	Status       string     `gorm:"size:16;not null;default:'pending';index:idx_wakeup_status"`
+	AttemptCount int        `gorm:"column:attempt_count;default:0"`
+	LastError    string     `gorm:"column:last_error;type:text"`
+	CreatedAt    time.Time  `gorm:"not null;default:NOW()"`
+	OriginatedAt *time.Time `gorm:"column:originated_at"`
+	CompletedAt  *time.Time `gorm:"column:completed_at"`
+	Metadata     string     `gorm:"type:jsonb;default:'{}'::jsonb"`
+}
+
+func (WakeUpCall) TableName() string {
+	return "wakeup_calls"
+}
+
+// WakeUp status values.
+const (
+	WakeUpStatusPending    = "pending"
+	WakeUpStatusOriginated = "originated"
+	WakeUpStatusCompleted  = "completed"
+	WakeUpStatusFailed     = "failed"
+	WakeUpStatusCancelled  = "cancelled"
+)
+
 type BicomSystem struct {
 	ID               string    `gorm:"primaryKey;size:64"`
 	Name             string    `gorm:"size:255;not null"`
@@ -243,6 +275,7 @@ func AutoMigrate(db *DB) error {
 		&RoomMapping{},
 		&GuestSession{},
 		&PMSEvent{},
+		&WakeUpCall{},
 	)
 }
 
@@ -757,4 +790,109 @@ func (db *DB) GetSiteHealthStatus(ctx context.Context, siteID string) (string, e
 		return "unhealthy", nil
 	}
 	return "degraded", nil
+}
+
+// =============================================================================
+// Wake-up call repository
+// =============================================================================
+
+// CreateWakeUpCall inserts a new pending wake-up row. Returns the new ID.
+func (db *DB) CreateWakeUpCall(ctx context.Context, w *WakeUpCall) (int64, error) {
+	if w.Status == "" {
+		w.Status = WakeUpStatusPending
+	}
+	if err := db.DB.WithContext(ctx).Create(w).Error; err != nil {
+		return 0, fmt.Errorf("creating wake-up call: %w", err)
+	}
+	return w.ID, nil
+}
+
+// GetDueWakeUpCalls returns pending wake-ups whose ScheduledAt <= now,
+// ordered by ScheduledAt ascending, capped at limit rows. The scheduler
+// uses this on every tick.
+func (db *DB) GetDueWakeUpCalls(ctx context.Context, now time.Time, limit int) ([]WakeUpCall, error) {
+	var out []WakeUpCall
+	if err := db.DB.WithContext(ctx).
+		Where("status = ? AND scheduled_at <= ?", WakeUpStatusPending, now).
+		Order("scheduled_at asc").
+		Limit(limit).
+		Find(&out).Error; err != nil {
+		return nil, fmt.Errorf("querying due wake-up calls: %w", err)
+	}
+	return out, nil
+}
+
+// MarkWakeUpOriginated transitions a row to "originated" once the PBX
+// has accepted the originate request. OriginatedAt is set to now.
+func (db *DB) MarkWakeUpOriginated(ctx context.Context, id int64) error {
+	now := time.Now()
+	return db.DB.WithContext(ctx).Exec(`
+		UPDATE wakeup_calls
+		SET status = ?, originated_at = ?, attempt_count = attempt_count + 1
+		WHERE id = ?
+	`, WakeUpStatusOriginated, now, id).Error
+}
+
+// MarkWakeUpCompleted transitions a row to "completed" once the wake-up
+// call has finished (e.g. hangup observed). CompletedAt is set to now.
+func (db *DB) MarkWakeUpCompleted(ctx context.Context, id int64) error {
+	now := time.Now()
+	return db.DB.WithContext(ctx).Exec(`
+		UPDATE wakeup_calls
+		SET status = ?, completed_at = ?
+		WHERE id = ?
+	`, WakeUpStatusCompleted, now, id).Error
+}
+
+// MarkWakeUpFailed transitions a row to "failed" with an error message.
+// The scheduler increments attempt_count.
+func (db *DB) MarkWakeUpFailed(ctx context.Context, id int64, errMsg string) error {
+	return db.DB.WithContext(ctx).Exec(`
+		UPDATE wakeup_calls
+		SET status = ?, last_error = ?, attempt_count = attempt_count + 1,
+		    completed_at = COALESCE(completed_at, NOW())
+		WHERE id = ?
+	`, WakeUpStatusFailed, errMsg, id).Error
+}
+
+// CancelWakeUpCall transitions a row to "cancelled". Used when a PMS
+// wake-up event arrives with enabled=false.
+func (db *DB) CancelWakeUpCall(ctx context.Context, id int64) error {
+	now := time.Now()
+	return db.DB.WithContext(ctx).Exec(`
+		UPDATE wakeup_calls
+		SET status = ?, completed_at = ?
+		WHERE id = ? AND status IN (?, ?)
+	`, WakeUpStatusCancelled, now, id, WakeUpStatusPending, WakeUpStatusOriginated).Error
+}
+
+// ListWakeUpCalls returns recent wake-up calls for a tenant (most recent first).
+func (db *DB) ListWakeUpCalls(ctx context.Context, tenantID string, limit int) ([]WakeUpCall, error) {
+	var out []WakeUpCall
+	if err := db.DB.WithContext(ctx).
+		Where("tenant_id = ?", tenantID).
+		Order("scheduled_at desc").
+		Limit(limit).
+		Find(&out).Error; err != nil {
+		return nil, fmt.Errorf("querying wake-up calls: %w", err)
+	}
+	return out, nil
+}
+
+// FindPendingWakeUpCall finds a pending wake-up for a (tenant, extension)
+// within the given time window. Used when a guest calls to cancel.
+func (db *DB) FindPendingWakeUpCall(ctx context.Context, tenantID, extension string) (*WakeUpCall, error) {
+	var w WakeUpCall
+	err := db.DB.WithContext(ctx).
+		Where("tenant_id = ? AND extension = ? AND status = ?",
+			tenantID, extension, WakeUpStatusPending).
+		Order("scheduled_at desc").
+		First(&w).Error
+	if err != nil {
+		if err == gorm.ErrRecordNotFound {
+			return nil, nil
+		}
+		return nil, fmt.Errorf("querying pending wake-up: %w", err)
+	}
+	return &w, nil
 }

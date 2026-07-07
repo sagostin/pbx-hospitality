@@ -35,6 +35,12 @@ type Provider interface {
 	ScheduleWakeUpCall(ctx context.Context, ext string, wakeTime time.Time) error
 	CancelWakeUpCall(ctx context.Context, ext string) error
 
+	// OriginateWakeUp places a wake-up call to the extension. Returns nil
+	// when the call has been successfully initiated. greetingURL is
+	// optional — when supported by the provider it points to media to
+	// play once the call is answered.
+	OriginateWakeUp(ctx context.Context, ext, greetingURL string) error
+
 	// Call forwarding
 	SetCallForward(ctx context.Context, ext, destination string, enabled bool) error
 }
@@ -49,12 +55,13 @@ type Config struct {
 // Capabilities describes what features a PBX provider supports.
 // This allows graceful degradation when a feature isn't available.
 type Capabilities struct {
-	SupportsWakeUpCalls       bool
+	SupportsWakeUpCalls        bool
+	SupportsWakeUpOrigination  bool // OriginateWakeUp via ARI / SIP
 	SupportsVoicemailGreeting bool
-	SupportsCallForward       bool
-	SupportsMWI               bool
-	SupportsDND               bool
-	SupportsInboundEvents     bool
+	SupportsCallForward        bool
+	SupportsMWI                bool
+	SupportsDND                bool
+	SupportsInboundEvents      bool
 }
 
 // ProviderWithCapabilities extends Provider with capability introspection.

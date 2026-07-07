@@ -798,6 +798,17 @@ func (t *Tenant) handleCheckOut(ctx context.Context, ext string, evt pms.Event, 
 		log.Debug().Err(err).Msg("Failed to cancel wake-up call (may not exist)")
 	}
 
+	// Cancel any pending wake-up rows in the scheduler queue
+	if t.database != nil {
+		if w, err := t.database.FindPendingWakeUpCall(ctx, t.ID, evt.Room); err != nil {
+			log.Warn().Err(err).Msg("Failed to look up pending wake-up call")
+		} else if w != nil {
+			if err := t.database.CancelWakeUpCall(ctx, w.ID); err != nil {
+				log.Warn().Err(err).Int64("wakeup_id", w.ID).Msg("Failed to cancel pending wake-up call")
+			}
+		}
+	}
+
 	// Clear MWI lamp
 	if err := t.pbxProvider.SetMWI(ctx, ext, false); err != nil {
 		log.Error().Err(err).Msg("Failed to clear MWI")
@@ -847,6 +858,24 @@ func (t *Tenant) handleWakeUp(ctx context.Context, ext string, evt pms.Event, lo
 		log.Error().Err(err).Str("time", wakeTime.Format("15:04")).Msg("Failed to schedule wake-up call")
 		metrics.PMSEventErrors.WithLabelValues(t.ID, "WakeUp", "pbx_provider").Inc()
 		return
+	}
+
+	// Persist the scheduled time so the WakeUpScheduler can fire the
+	// actual ring via ARI Originate at HH:MM. The PBX REST API has
+	// already accepted the state-toggle; the scheduler handles the
+	// actual call placement.
+	if t.database != nil {
+		if _, err := t.database.CreateWakeUpCall(ctx, &db.WakeUpCall{
+			TenantID:    t.ID,
+			Extension:   ext,
+			ScheduledAt: wakeTime,
+			Status:      db.WakeUpStatusPending,
+			Metadata:    fmt.Sprintf(`{"source":"%s"}`, evt.Type.String()),
+		}); err != nil {
+			// Non-fatal — the wake-up state is already on the PBX;
+			// the scheduler just won't auto-originate.
+			log.Warn().Err(err).Msg("Failed to persist wake-up call for ARI originate")
+		}
 	}
 
 	log.Info().

@@ -80,6 +80,7 @@ func NewRouterWithDB(tm *tenant.Manager, pbxMgr *pbx.Manager, cfg *config.Config
 	adminGroup.Get("/:id/events", admin.listTenantEvents)
 	adminGroup.Delete("/:id/events/:eventID", admin.deleteTenantEvent)
 	adminGroup.Post("/:id/events/:eventID/retry", admin.retryTenantEvent)
+	adminGroup.Get("/:id/wakeups", admin.listTenantWakeUps)
 	adminGroup.Get("/:id/health", admin.getTenantHealth)
 	adminGroup.Get("/:id/capabilities", admin.getTenantCapabilities)
 

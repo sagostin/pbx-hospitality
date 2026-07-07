@@ -83,12 +83,31 @@ Status legend:
 
 ## 3. Tenant / PBX Provider Hardening
 
-- [TODO] **WakeUpScheduler (Tier 1)** — in-process goroutine + `wakeup_calls`
+- [DONE] **WakeUpScheduler (Tier 1)** — in-process goroutine + `wakeup_calls`
       table; uses ARI `Channels.Originate` to fire Bicom wake-up calls at
       the scheduled time. The Bicom REST API only supports state toggle
       (no time parameter), so the scheduler is the only way to deliver
       PMS-driven timed wake-ups on Bicom. See
       [Wake-Up Call Flow diagram](docs/architecture.md#wake-up-call-flow-pms-driven-bicom--ari).
+      - `pbx.Provider.OriginateWakeUp(ctx, ext, greetingURL)` interface method
+      - `pbx/bicom` implements via `ari.Client.Channel().Originate(...)`
+        with `App: "wakeup"` for a Stasis handler to play a greeting
+      - `pbx/zultys` returns `ErrOriginateNotSupported` + structured
+        counter `hospitality_pbx_wakeup_unsupported_total{pbx="zultys",action="originate"}`
+      - `internal/wakeup` package with `Scheduler.Start/Stop`, ticks
+        every 10s, caps batch at 100 rows, swallows repo errors per tick
+      - `tenant.handleWakeUp` inserts the row after a successful state
+        toggle; `tenant.handleCheckOut` cancels any pending row
+      - `db.WakeUpCall` model + `CreateWakeUpCall`,
+        `GetDueWakeUpCalls`, `MarkWakeUpOriginated`,
+        `MarkWakeUpFailed`, `MarkWakeUpCompleted`,
+        `CancelWakeUpCall`, `ListWakeUpCalls`,
+        `FindPendingWakeUpCall` repo methods
+      - `migrations/003_wakeup_calls.sql` with partial index on
+        pending rows for the scheduler hot path
+      - `GET /admin/tenants/{id}/wakeups` admin endpoint
+      - Tests: `internal/wakeup/scheduler_test.go` (4 tests covering
+        nil tm, repo error, default interval)
 
 - [TODO] Add a real reconnect supervisor for `tenant.Start`. Today, a
       single transient PMS or PBX failure at boot kills the tenant for
@@ -195,12 +214,12 @@ Backlog:
 2. ✅ **Tier 0 — Wake-up pipeline (this PR).** TigerTMS metadata key fix,
    Bicom `opwakeupcall.set` rewrite, Zultys loud-fail, capabilities
    endpoint, regression tests.
-3. **Tier 1 — WakeUpScheduler + ARI originate.** Fixes the "kill the
-   process to recover" pain point that every operator hits in week one,
-   and is the missing half of the wake-up pipeline.
-4. Reconcile `pbx.Manager` ↔ `tenant.Manager` (§3) — pick one model.
-5. Wire `pbx.CallEvent` → PMS MWI (§3) — closes the voicemail→lamp loop.
-6. Tier 2 — TigerTMS round-out (COS, DDI, reservation_id) + Mitel WAK.
+3. ✅ **Tier 1 — WakeUpScheduler + ARI originate (this PR).** Closes
+   the wake-up pipeline on Bicom. Zultys loud-fails.
+4. **Tier 2 — TigerTMS round-out + Mitel WAK.** COS / DDI / reservation_id
+   handling; add WAK to Mitel parser.
+5. Reconcile `pbx.Manager` ↔ `tenant.Manager` (§3) — pick one model.
+6. Wire `pbx.CallEvent` → PMS MWI (§3) — closes the voicemail→lamp loop.
 7. Tier 3 — ASIP, Mews, Cloudbeds adapters.
 8. Tier 4 — Outbound webhook delivery.
 9. Fold `site-connector` into the main binary.

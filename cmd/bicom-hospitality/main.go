@@ -19,6 +19,7 @@ import (
 	"github.com/sagostin/pbx-hospitality/internal/logging"
 	"github.com/sagostin/pbx-hospitality/internal/pbx"
 	"github.com/sagostin/pbx-hospitality/internal/tenant"
+	"github.com/sagostin/pbx-hospitality/internal/wakeup"
 )
 
 func main() {
@@ -103,6 +104,15 @@ func main() {
 		log.Fatal().Err(err).Msg("Failed to start tenants")
 	}
 
+	// Start the wake-up scheduler when a database is available. The
+	// scheduler polls wakeup_calls and fires Bicom OriginateWakeUp at
+	// the scheduled time.
+	var wakeUpScheduler *wakeup.Scheduler
+	if database != nil {
+		wakeUpScheduler = wakeup.NewScheduler(tm, database, wakeup.DefaultInterval)
+		wakeUpScheduler.Start(ctx)
+	}
+
 	// Initialize HTTP API
 	var router http.Handler
 	if database != nil {
@@ -140,6 +150,12 @@ func main() {
 	// Stop HTTP server
 	if err := server.Shutdown(shutdownCtx); err != nil {
 		log.Error().Err(err).Msg("HTTP server shutdown error")
+	}
+
+	// Stop the wake-up scheduler before tenants so we don't dispatch
+	// during teardown.
+	if wakeUpScheduler != nil {
+		wakeUpScheduler.Stop()
 	}
 
 	// Stop all tenants
