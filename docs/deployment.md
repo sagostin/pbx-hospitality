@@ -19,42 +19,37 @@ This guide covers deploying the Hospitality PMS Integration service in productio
 
 ```bash
 git clone https://github.com/sagostin/pbx-hospitality.git
-cd bicom-hospitality
-cp config/example.yaml config/config.yaml
+cd pbx-hospitality
+cp .env.example .env
+# edit .env: set DB_PASSWORD, ENCRYPTION_MASTER_KEY, ADMIN_API_KEY
 ```
 
-### 2. Edit Configuration
+Configuration is loaded **from environment variables only** at runtime —
+`config/example.yaml` is a reference template, not parsed. The two
+non-env knobs (per-tenant PMS / PBX config) live in PostgreSQL and are
+managed through the Admin API. The bundled `migrations/002_seed.sql`
+loads a sample tenant + site + Bicom system for dev installs:
 
-```yaml
-# config/config.yaml
-server:
-  port: 8080
+```bash
+psql -h localhost -U hospitality -d hospitality -f migrations/002_seed.sql
+```
 
-database:
-  host: db
-  port: 5432
-  user: hospitality
-  password: ${DB_PASSWORD}
-  database: hospitality
-  ssl_mode: disable
+### 2. Boot the Stack
 
-tenants:
-  - id: hotel-alpha
-    name: "Hotel Alpha"
-    pms:
-      protocol: mitel    # or "fias"
-      host: 10.0.1.50
-      port: 23
-    pbx:
-      ari_url: "http://pbx.example.com:8088/ari"
-      ari_ws_url: "ws://pbx.example.com:8088/ari/events"
-      ari_user: "hospitality"
-      ari_pass: "${ARI_PASSWORD}"
-      app_name: "hospitality"
-      api_url: "https://pbx.example.com"
-      api_key: "${BICOM_API_KEY}"
-      tenant_id: "1"
-    room_prefix: "1"
+```bash
+docker compose up -d
+docker compose logs -f app   # confirm "Tenant loaded from database"
+```
+
+```mermaid
+graph LR
+    subgraph host["Docker host"]
+        APP[app container<br/>bicom-hospitality]
+        DB[db container<br/>postgres:15]
+    end
+    PMS[PMS] -- TCP 23/5000 --> APP
+    PBX[PBX] -- ARI WS + REST --> APP
+    APP --> DB
 ```
 
 ### 3. Create Environment File
@@ -102,19 +97,80 @@ docker compose logs -f hospitality
 
 ### Schema Creation
 
-Database schema is created automatically via GORM AutoMigrate on application startup. No manual migration files are required.
+Database schema is created automatically via GORM AutoMigrate on application
+startup. The reference SQL (`migrations/001_schema.sql`) is kept in sync
+manually so ops can inspect the schema without booting the service.
 
 ### Schema Overview
+
+```mermaid
+erDiagram
+    sites ||--o{ tenants : hosts
+    sites ||--o{ site_bicom_mappings : "uses"
+    bicom_systems ||--o{ site_bicom_mappings : "used by"
+    tenants ||--o{ room_mappings : "has"
+    tenants ||--o{ guest_sessions : "tracks"
+    tenants ||--o{ pms_events : "audit log"
+
+    sites {
+        string id PK
+        string name
+        string auth_code
+    }
+    tenants {
+        string id PK
+        string site_id FK
+        string name
+        jsonb pms_config
+        jsonb pbx_config
+        bool enabled
+    }
+    bicom_systems {
+        string id PK
+        string name
+        string api_url
+        string api_key
+        bytes ari_pass_encrypted
+        bytes ari_pass_nonce
+    }
+    room_mappings {
+        int id PK
+        string tenant_id FK
+        string room_number
+        string room_end
+        string extension
+        string extension_end
+        string match_pattern
+    }
+    guest_sessions {
+        int id PK
+        string tenant_id FK
+        string room_number
+        string extension
+        string guest_name
+        timestamp check_in
+        timestamp check_out
+    }
+    pms_events {
+        bigint id PK
+        string tenant_id FK
+        string event_type
+        string room_number
+        string extension
+        bool processed
+        text error
+    }
+```
 
 | Table | Purpose |
 |-------|---------|
 | `sites` | Physical property with auth code |
 | `tenants` | Hotel instance with PMS/PBX config |
-| `bicom_systems` | PBX connection configuration |
+| `bicom_systems` | PBX connection configuration (ARI password AES-256-GCM encrypted) |
 | `site_bicom_mappings` | Site-to-PBX associations |
-| `room_mappings` | Room number → Extension mapping |
+| `room_mappings` | Room number → Extension mapping (individual / range / regex) |
 | `guest_sessions` | Check-in/out history |
-| `pms_events` | Audit log of all PMS events |
+| `pms_events` | Audit log of all PMS events; backs the admin retry queue |
 
 ---
 

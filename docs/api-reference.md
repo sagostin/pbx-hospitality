@@ -199,6 +199,45 @@ GET /api/v1/tenants/{id}/sessions/{room}
 }
 ```
 
+### Create Session Manually
+
+```http
+POST /api/v1/tenants/{id}/sessions
+Content-Type: application/json
+
+{
+  "room_number": "101",
+  "extension": "1101",
+  "guest_name": "John Smith",
+  "reservation_id": "RES-1234",
+  "metadata": { "channel": "direct" }
+}
+```
+
+**Response (201):**
+```json
+{
+  "id": 1,
+  "room_number": "101",
+  "guest_name": "John Smith"
+}
+```
+
+### End Session
+
+```http
+DELETE /api/v1/tenants/{id}/sessions/{room}
+```
+
+Marks the active session for the given room as checked out. Does **not** touch
+the PBX (does not clear extension name, voicemails, MWI). For full guest
+checkout side effects, send a `CheckOut` PMS event instead.
+
+**Response (200):**
+```json
+{ "status": "ended", "room": "101" }
+```
+
 ---
 
 ## PMS Events
@@ -283,3 +322,42 @@ X-Webhook-Signature: sha256=<hmac-signature>
 | `call_end` | Call ended |
 
 See [PBX Providers Guide](pbx-providers.md) for provider-specific details.
+
+---
+
+## Inbound PMS Endpoints
+
+### TigerTMS
+
+```http
+POST /tigertms/{tenant}/API/*
+```
+
+Mounted dynamically at startup for every tenant whose `pms.protocol` is
+`tigertms`. The `{tenant}` path segment must match an existing tenant ID.
+
+See [tigertms.md](tigertms.md) for the full set of supported endpoints.
+
+---
+
+## WebSocket Log Tail
+
+```http
+GET /ws/logs
+Upgrade: websocket
+```
+
+Stream live structured logs. Authenticated via the `SERVICE_NAME` env var
+(token in `Sec-WebSocket-Protocol` header). Enabled when
+`logging.websocket_logs.enabled: true` in config (default env: `WS_LOGS_ENABLED`).
+
+---
+
+## Other Endpoints
+
+| Path | Method | Description |
+|------|--------|-------------|
+| `/admin/tenants/*` | various | Tenant CRUD + sub-resources. Requires `X-Admin-Key`. See [admin-api.md](admin-api.md). |
+| `/admin/sites/*` | various | Site CRUD + PBX mappings. Requires `X-Admin-Key`. |
+| `/admin/bicom-systems/*` | various | Bicom PBX CRUD + ARI secret rotation. Requires `X-Admin-Key`. |
+| `/admin/pbx/*` | various | PBX manager status + reload. Requires `X-Admin-Key`. |

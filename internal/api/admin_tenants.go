@@ -538,6 +538,77 @@ func (s *AdminServer) retryTenantEvent(c *fiber.Ctx) error {
 	})
 }
 
+// getTenantCapabilities reports the runtime capabilities of the tenant's
+// PMS + PBX stack. Operators use this to detect misconfigurations like
+// "Zultys tenant receiving PMS wake-up events" or "Bicom without ES module
+// for operator-set wake-up".
+//
+// Capabilities are sourced from:
+//   - pms.Adapter.Capabilities()   (FIAS / Mitel / TigerTMS) — adapter interface
+//   - pbx.Provider.Capabilities() (Bicom / Zultys)        — provider interface
+//
+// The endpoint returns 200 even if the tenant is currently disconnected;
+// the booleans describe "what would work if everything were up".
+func (s *AdminServer) getTenantCapabilities(c *fiber.Ctx) error {
+	tenantID := c.Params("id")
+	if !validateTenantID(tenantID) {
+		return writeError(c, "invalid tenant ID format", "INVALID_ID", fiber.StatusBadRequest)
+	}
+
+	t, ok := s.tm.Get(tenantID)
+	if !ok {
+		return writeError(c, "tenant not found", "NOT_FOUND", fiber.StatusNotFound)
+	}
+
+	caps := map[string]interface{}{
+		"pbx_type": "",
+		"pbx": map[string]bool{
+			"supports_wake_up_calls":      false,
+			"supports_voicemail_greeting": false,
+			"supports_call_forward":       false,
+			"supports_mwi":                false,
+			"supports_dnd":                false,
+			"supports_inbound_events":     false,
+		},
+		"pms": map[string]interface{}{
+			"protocol":  "",
+			"connected": false,
+		},
+		"notes": []string{},
+	}
+
+	if pbxProvider := t.PBXProvider(); pbxProvider != nil {
+		if capProvider, ok := pbxProvider.(pbx.ProviderWithCapabilities); ok {
+			pbxCaps := capProvider.Capabilities()
+			caps["pbx"] = map[string]bool{
+				"supports_wake_up_calls":      pbxCaps.SupportsWakeUpCalls,
+				"supports_voicemail_greeting": pbxCaps.SupportsVoicemailGreeting,
+				"supports_call_forward":       pbxCaps.SupportsCallForward,
+				"supports_mwi":                pbxCaps.SupportsMWI,
+				"supports_dnd":                pbxCaps.SupportsDND,
+				"supports_inbound_events":     pbxCaps.SupportsInboundEvents,
+			}
+			if pbxCaps.SupportsWakeUpCalls {
+				caps["notes"] = append(caps["notes"].([]string),
+					"Wake-up state is toggled on the PBX via REST. The actual ring-at-HH:MM is performed by the WakeUpScheduler via ARI Originate.")
+			} else {
+				caps["notes"] = append(caps["notes"].([]string),
+					"Wake-up calls are NOT supported by this PBX. PMS wake-up events will fail. See ROADMAP.md for migration options.")
+			}
+		}
+	}
+
+	if pmsAdapter := t.PMSAdapter(); pmsAdapter != nil {
+		caps["pms"] = map[string]interface{}{
+			"protocol":  pmsAdapter.Protocol(),
+			"connected": pmsAdapter.Connected(),
+		}
+	}
+
+	c.Set("Content-Type", "application/json")
+	return c.JSON(caps)
+}
+
 func (s *AdminServer) getTenantHealth(c *fiber.Ctx) error {
 	if s.db == nil {
 		return writeError(c, "database not configured", "DB_NOT_CONFIGURED", fiber.StatusServiceUnavailable)

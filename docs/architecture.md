@@ -4,41 +4,58 @@
 
 This document describes the architecture for a **multi-tenant hospitality integration** that connects Property Management Systems (PMS) to multiple PBX backends through a provider abstraction layer. The system supports multiple PMS protocols and PBX providers with per-tenant isolation.
 
+### System Topology
+
+The system ships as **two binaries** that share the protocol layer:
+
+- **`bicom-hospitality`** — the cloud/main service. Owns the database, the REST + Admin API, and runs one pipeline per tenant. PMS systems either push events directly to it (TigerTMS HTTP) or via a local `site-connector` agent.
+- **`site-connector`** — an edge listener agent. Runs at the hotel on the PMS LAN. Accepts FIAS or Mitel connections, parses events, and forwards them upstream over HTTPS or WebSocket.
+
 ```mermaid
 graph TB
-    subgraph "PMS Systems"
-        FIAS[FIAS/Fidelio PMS]
-        MITEL[Mitel SX-200 PMS]
-        TIGER[TigerTMS iLink]
-        OTHER[Other PMS Vendors]
-    end
-
-    subgraph "Integration Service"
-        PROTO[Protocol Adapters]
-        CORE[Core Engine]
-        PBX_LAYER[PBX Provider Layer]
-        API[REST API]
+    subgraph Cloud["Hospitality Service (bicom-hospitality)"]
+        API[REST + Admin API<br/>Fiber]
+        TM[Tenant Manager]
+        EVPROC[Event Processor<br/>per-tenant goroutine]
+        ROOMMAP[Room Mapper]
         DB[(PostgreSQL)]
+        CRYPTO[AES-256-GCM<br/>ARI password vault]
     end
 
-    subgraph "PBX Systems"
-        BICOM[Bicom PBXware<br/>ARI + REST API]
-        ZULTYS[Zultys MX<br/>Webhook + REST]
-        OTHER_PBX[Other PBX<br/>FreeSWITCH, 3CX]
+    subgraph Edge["Site Connector (site-connector)"]
+        LISTEN[Mitel / FIAS<br/>Listener]
+        OUT[Resilient Output<br/>HTTPS or WS]
+        BUF[Spool Buffer<br/>on-disk]
     end
 
-    FIAS --> |TCP| PROTO
-    MITEL --> |TCP/Serial| PROTO
-    TIGER --> |HTTP REST| PROTO
-    OTHER --> |Various| PROTO
-    PROTO --> CORE
-    CORE --> DB
-    CORE --> PBX_LAYER
-    PBX_LAYER --> BICOM
-    PBX_LAYER --> ZULTYS
-    PBX_LAYER -.-> OTHER_PBX
-    API --> CORE
-    ZULTYS --> |Webhook| API
+    subgraph PMS["PMS Systems"]
+        OPERA[Oracle OPERA / FIAS]
+        MITEL[Mitel SX-200]
+        TIGER[TigerTMS iLink]
+    end
+
+    subgraph PBX["PBX Systems"]
+        BICOM[Bicom PBXware<br/>ARI WebSocket + REST API]
+        ZULTYS[Zultys MX<br/>REST + HTTP webhook]
+    end
+
+    OPERA -- TCP 5000 --> LISTEN
+    MITEL -- TCP 23 --> LISTEN
+    LISTEN --> BUF
+    BUF --> OUT
+    OUT -- HTTPS / WSS --> API
+
+    TIGER -- HTTPS push --> API
+    BICOM -- ARI WebSocket --> EVPROC
+    ZULTYS -- HTTP webhook --> API
+
+    API --> TM
+    TM --> EVPROC
+    EVPROC --> ROOMMAP
+    EVPROC --> BICOM
+    EVPROC --> ZULTYS
+    TM --> DB
+    TM --> CRYPTO
 ```
 
 See [PBX Providers Guide](pbx-providers.md) for detailed provider documentation.
@@ -303,7 +320,9 @@ type RoomMapper interface {
 
 ### 4. Event Processor
 
-Orchestrates PMS events to PBX actions:
+Orchestrates PMS events to PBX actions.
+
+#### Check-In Flow (PMS → extension update)
 
 ```mermaid
 sequenceDiagram
@@ -311,18 +330,87 @@ sequenceDiagram
     participant Adapter as Protocol Adapter
     participant Processor as Event Processor
     participant Mapper as Room Mapper
-    participant ARI as ARI Client
-    participant PBX as Bicom PBX
+    participant PBX as PBX Provider
+    participant REST as PBX REST API
+    participant DB as PostgreSQL
 
     PMS->>Adapter: <STX>CHK1 2129<ETX>
-    Adapter->>Processor: CheckIn(room=2129)
+    Adapter->>Processor: pms.Event{Type: CheckIn, Room: 2129}
     Processor->>Mapper: GetExtension("hotel-a", "2129")
+    Mapper->>DB: SELECT FROM room_mappings ...
+    DB-->>Mapper: extension=12129
     Mapper-->>Processor: "12129"
-    Processor->>ARI: UpdateExtension("12129", active=true)
-    ARI->>PBX: ARI: Update endpoint
-    PBX-->>ARI: OK
+    Processor->>PBX: UpdateExtensionName(ctx, "12129", guestName)
+    PBX->>REST: pbxware.ext.edit?id=12129&name=...
+    REST-->>PBX: success
+    Processor->>DB: INSERT INTO guest_sessions (room=2129, extension=12129, check_in=NOW())
     Processor->>Adapter: SendAck()
     Adapter->>PMS: <ACK>
+```
+
+#### Check-Out Flow (cleanup + DB end-of-session)
+
+```mermaid
+sequenceDiagram
+    participant PMS as PMS System
+    participant Adapter as Protocol Adapter
+    participant Processor as Event Processor
+    participant PBX as PBX Provider
+    participant ARI as ARI / REST API
+    participant DB as PostgreSQL
+
+    PMS->>Adapter: <STX>CHK0 2129<ETX>
+    Adapter->>Processor: pms.Event{Type: CheckOut, Room: 2129}
+    Processor->>PBX: UpdateExtensionName(ctx, ext, "")
+    PBX->>ARI: clear caller-ID name
+    Processor->>PBX: ClearVoicemailForGuest(ctx, ext)
+    PBX->>ARI: vm.delete_all + greeting reset
+    Processor->>PBX: CancelWakeUpCall(ctx, ext)
+    PBX->>ARI: ext.es.wakeupcall.edit enabled=0
+    Processor->>PBX: SetMWI(ctx, ext, false)
+    PBX->>ARI: mailbox update (lamp off)
+    Processor->>DB: UPDATE guest_sessions SET check_out=NOW() WHERE room=2129 AND check_out IS NULL
+    Processor->>Adapter: SendAck()
+```
+
+#### PBX → PMS Reverse Flow (voicemail webhook → MWI)
+
+```mermaid
+sequenceDiagram
+    participant PBX as PBX (Zultys / Bicom)
+    participant API as /api/v1/pbx/webhook/{tenant}
+    participant Provider as PBX Provider<br/>(implements WebhookProvider)
+    participant Tenant as Tenant Event Processor
+    participant PMS as PMS Adapter
+
+    PBX->>API: POST {event:"voicemail_left", extension:"1101", ...}
+    API->>Provider: HandleWebhook(req)
+    Provider->>Provider: validate HMAC signature
+    Provider->>Provider: mapWebhookEventToCallEvent
+    Provider-->>Tenant: events <- CallEvent{Type: VoicemailLeft}
+    Tenant->>PMS: emit pms.Event{Type: MessageWaiting, Status: true}
+```
+
+#### `site-connector` Forwarding Flow
+
+```mermaid
+sequenceDiagram
+    participant PMS as PMS (FIAS / Mitel)
+    participant Listener as site-connector Listener
+    participant Buffer as Spool Buffer (disk)
+    participant Output as Resilient Output
+    participant API as Hospitality /api/v1/pbx/webhook/{site}
+
+    PMS->>Listener: GI|RN1015|GNSmith|
+    Listener->>Listener: parse → pms.Event{Type: CheckIn}
+    Listener->>Output: EventEnvelope{protocol, event}
+    alt URL reachable
+        Output->>API: POST (HTTPS or WSS)
+        API-->>Output: 200 OK
+    else URL unreachable
+        Output->>Buffer: append to disk
+        Note over Buffer: batch retries with backoff
+    end
 ```
 
 ---
@@ -501,30 +589,41 @@ ari_requests_total{tenant="hotel-a", method="originate"} 892
 
 ### Docker Compose Example
 
+The repo ships a `docker-compose.yml` that defines the database and the app
+service. See the file at the repo root for the current canonical form. A
+typical reference:
+
 ```yaml
-version: "3.8"
 services:
-  hospitality-integration:
-    image: tops/bicom-hospitality:latest
+  app:
+    build: .
+    image: pbx-hospitality:latest
     environment:
-      DATABASE_URL: postgres://user:pass@db:5432/hospitality
-      CONFIG_PATH: /config/tenants.yaml
+      SERVER_PORT: "8080"
+      DB_HOST: db
+      DB_PORT: "5432"
+      DB_USER: hospitality
+      DB_PASSWORD: ${DB_PASSWORD}
+      DB_NAME: hospitality
+      DB_SSL_MODE: disable
+      ENCRYPTION_MASTER_KEY: ${ENCRYPTION_MASTER_KEY}
+      ADMIN_API_KEY: ${ADMIN_API_KEY}
     ports:
-      - "8080:8080"   # REST API
-    volumes:
-      - ./config:/config:ro
+      - "8080:8080"
     depends_on:
       - db
     healthcheck:
-      test: ["CMD", "curl", "-f", "http://localhost:8080/health"]
+      test: ["CMD", "/app/bicom-hospitality", "--health-check"]
       interval: 30s
+      timeout: 5s
+      retries: 3
 
   db:
     image: postgres:15
     environment:
       POSTGRES_DB: hospitality
-      POSTGRES_USER: user
-      POSTGRES_PASSWORD: pass
+      POSTGRES_USER: hospitality
+      POSTGRES_PASSWORD: ${DB_PASSWORD}
     volumes:
       - pgdata:/var/lib/postgresql/data
 

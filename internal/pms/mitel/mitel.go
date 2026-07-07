@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"io"
 	"net"
+	"strconv"
 	"strings"
 	"sync"
 	"time"
@@ -78,7 +79,7 @@ func (a *Adapter) Connect(ctx context.Context) error {
 
 	ctx, a.cancel = context.WithCancel(ctx)
 
-	addr := fmt.Sprintf("%s:%d", a.host, a.port)
+	addr := net.JoinHostPort(a.host, strconv.Itoa(a.port))
 	conn, err := net.DialTimeout("tcp", addr, 10*time.Second)
 	if err != nil {
 		return fmt.Errorf("connecting to Mitel PMS at %s: %w", addr, err)

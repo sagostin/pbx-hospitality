@@ -35,15 +35,15 @@ func init() {
 // Each connection is handled independently, parsing pipe-delimited records and
 // converting them to PMS events for downstream processing.
 type FiasListener struct {
-	host    string
-	port    int
-	events  chan pms.Event
-	allowed []string // allowed PMS IPs; if empty, all IPs are allowed
+	host     string
+	port     int
+	events   chan pms.Event
+	allowed  []string // allowed PMS IPs; if empty, all IPs are allowed
 	listener net.Listener
-	cancel  context.CancelFunc
-	wg      sync.WaitGroup
-	mu      sync.RWMutex
-	closed  bool
+	cancel   context.CancelFunc
+	wg       sync.WaitGroup
+	mu       sync.RWMutex
+	closed   bool
 }
 
 // NewFiasListener creates a new FIAS PMS Listener TCP server.
@@ -108,10 +108,13 @@ func (l *FiasListener) Listen(ctx context.Context) error {
 		return fmt.Errorf("listen on %s: %w", addr, err)
 	}
 	l.listener = ln
+
+	// Derive a cancellable context and store cancel under the mutex so
+	// Close() can read it without racing with this assignment.
+	listenCtx, cancel := context.WithCancel(ctx)
+	l.cancel = cancel
 	l.closed = false
 	l.mu.Unlock()
-
-	ctx, l.cancel = context.WithCancel(ctx)
 
 	log.Info().
 		Str("host", l.host).
@@ -121,8 +124,8 @@ func (l *FiasListener) Listen(ctx context.Context) error {
 	// Accept loop
 	for {
 		select {
-		case <-ctx.Done():
-			return ctx.Err()
+		case <-listenCtx.Done():
+			return listenCtx.Err()
 		default:
 		}
 
@@ -146,7 +149,7 @@ func (l *FiasListener) Listen(ctx context.Context) error {
 		l.wg.Add(1)
 		go func() {
 			defer l.wg.Done()
-			l.handleConnection(ctx, conn)
+			l.handleConnection(listenCtx, conn)
 		}()
 	}
 }

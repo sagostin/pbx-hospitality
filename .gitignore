@@ -1,1 +1,4 @@
 site-connector
+bin/site-connector
+bin/pbx-hospitality
+scripts/.venv

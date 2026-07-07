@@ -60,11 +60,15 @@ type Extension struct {
 	ServicePlan string `json:"service_plan,omitempty"`
 }
 
-// WakeUpCall represents a scheduled wake-up call
+// WakeUpCall represents the wake-up call state on an extension.
+//
+// Bicom's `pbxware.ext.es.opwakeupcall.get` response only confirms whether
+// the extension has a wake-up scheduled; the actual time is held
+// internally by the PBX and not surfaced via this REST API.
 type WakeUpCall struct {
 	Extension string `json:"extension"`
-	Time      string `json:"time"` // Format: HH:MM
-	Enabled   bool   `json:"enabled"`
+	Enabled   bool   `json:"enabled"`          // Operator-set wake-up is set
+	Time      string `json:"time,omitempty"`   // Best-effort, may be empty
 	Snooze    int    `json:"snooze,omitempty"` // Snooze time in minutes
 }
 
@@ -314,58 +318,70 @@ func (c *Client) DeleteExtension(ctx context.Context, extensionID string) error 
 // =============================================================================
 // Wake-Up Call Management
 // =============================================================================
+//
+// The Bicom PBXware REST API only supports toggling the wake-up state for an
+// extension. It does NOT accept a time parameter — the actual wake-up time
+// is set either via the PBXware UI / dialplan or via the guest dialing the
+// *411 feature code from the room extension.
+//
+// Endpoints:
+//   - pbxware.ext.es.opwakeupcall.set  — operator-set variant (state=yes|no)
+//   - pbxware.ext.es.opwakeupcall.get  — read current state
+//   - pbxware.ext.es.wakeupcall.set    — self-set variant (state=yes|no)
+//   - pbxware.ext.es.wakeupcall.get    — read current state
+//
+// For hospitality, the operator-set variant is the right choice: staff sets
+// the wake-up on behalf of the guest via the PMS.
+//
+// To actually fire the call at the scheduled time, the WakeUpScheduler uses
+// ARI Channels.Originate (see internal/pbx/bicom/provider.go).
+// =============================================================================
 
-// ScheduleWakeUpCall schedules a wake-up call for an extension
-// Uses the Enhanced Services Wake-Up Call feature (normally accessed via *411)
+// ScheduleWakeUpCall toggles the operator-set wake-up state on Bicom.
+// The wakeTime argument is accepted for interface compatibility and to
+// drive the WakeUpScheduler; Bicom's REST API only accepts state=yes|no.
 func (c *Client) ScheduleWakeUpCall(ctx context.Context, extensionID string, wakeTime time.Time) error {
-	// Format time as HH:MM for Bicom API
-	timeStr := wakeTime.Format("15:04")
-
-	resp, err := c.doPost(ctx, "pbxware.ext.es.wakeupcall.edit", map[string]string{
-		"id":      extensionID,
-		"time":    timeStr,
-		"enabled": "1",
-	})
-	if err != nil {
-		return err
-	}
-
-	if !resp.Success {
-		return fmt.Errorf("failed to schedule wake-up call: %s", resp.Message)
-	}
-
-	log.Info().
-		Str("extension", extensionID).
-		Str("time", timeStr).
-		Msg("Wake-up call scheduled")
-
-	return nil
+	return c.SetWakeUpState(ctx, extensionID, true)
 }
 
-// CancelWakeUpCall cancels a scheduled wake-up call for an extension
+// CancelWakeUpCall clears the operator-set wake-up state on Bicom.
 func (c *Client) CancelWakeUpCall(ctx context.Context, extensionID string) error {
-	resp, err := c.doPost(ctx, "pbxware.ext.es.wakeupcall.edit", map[string]string{
-		"id":      extensionID,
-		"enabled": "0",
+	return c.SetWakeUpState(ctx, extensionID, false)
+}
+
+// SetWakeUpState toggles the operator-set wake-up state on the extension.
+// state=true → wake-up is set, false → cleared.
+func (c *Client) SetWakeUpState(ctx context.Context, extensionID string, state bool) error {
+	stateStr := "no"
+	if state {
+		stateStr = "yes"
+	}
+
+	resp, err := c.doPost(ctx, "pbxware.ext.es.opwakeupcall.set", map[string]string{
+		"id":    extensionID,
+		"state": stateStr,
 	})
 	if err != nil {
 		return err
 	}
 
 	if !resp.Success {
-		return fmt.Errorf("failed to cancel wake-up call: %s", resp.Message)
+		return fmt.Errorf("failed to set wake-up state: %s", resp.Message)
 	}
 
 	log.Info().
 		Str("extension", extensionID).
-		Msg("Wake-up call cancelled")
+		Str("state", stateStr).
+		Msg("Bicom wake-up state set")
 
 	return nil
 }
 
-// GetWakeUpCallStatus returns the current wake-up call configuration for an extension
+// GetWakeUpCallStatus returns the current wake-up state for an extension.
+// Bicom only exposes on/off; the actual scheduled time is held internally
+// and not surfaced via this REST API.
 func (c *Client) GetWakeUpCallStatus(ctx context.Context, extensionID string) (*WakeUpCall, error) {
-	resp, err := c.doRequest(ctx, "pbxware.ext.es.wakeupcall.get", map[string]string{
+	resp, err := c.doRequest(ctx, "pbxware.ext.es.opwakeupcall.get", map[string]string{
 		"id": extensionID,
 	})
 	if err != nil {

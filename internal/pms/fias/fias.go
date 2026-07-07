@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"io"
 	"net"
+	"strconv"
 	"strings"
 	"sync"
 	"time"
@@ -46,17 +47,17 @@ func init() {
 
 // Default values for FIAS adapter
 const (
-	DefaultFiasPort      = 5000  // Default FIAS server port
-	DefaultFiasTimeout   = 60    // seconds
-	MaxLineSize          = 4096 // Maximum FIAS record line size
-	MaxConcurrentConns   = 50    // Maximum concurrent PMS connections
+	DefaultFiasPort    = 5000 // Default FIAS server port
+	DefaultFiasTimeout = 60   // seconds
+	MaxLineSize        = 4096 // Maximum FIAS record line size
+	MaxConcurrentConns = 50   // Maximum concurrent PMS connections
 )
 
 // Adapter implements the PMS adapter for FIAS protocol
 type Adapter struct {
 	// Connection mode config
-	host   string
-	port   int
+	host string
+	port int
 
 	// Listen mode config
 	listenHost    string
@@ -80,9 +81,9 @@ type Adapter struct {
 
 // ListenConfig holds listen mode configuration
 type ListenConfig struct {
-	Host          string   // Listen host (empty = all interfaces)
-	Port          int      // Listen port (use negative to signal listen mode via PMSHost/PMSPort)
-	AllowedIPs    []string // Whitelist of allowed PMS IPs
+	Host       string   // Listen host (empty = all interfaces)
+	Port       int      // Listen port (use negative to signal listen mode via PMSHost/PMSPort)
+	AllowedIPs []string // Whitelist of allowed PMS IPs
 }
 
 // NewAdapter creates a new FIAS protocol adapter.
@@ -93,10 +94,10 @@ type ListenConfig struct {
 //     Use WithListenConfig() option to specify listen address and AllowedPMSIPs.
 func NewAdapter(host string, port int, opts ...pms.AdapterOption) (pms.Adapter, error) {
 	a := &Adapter{
-		host:          host,
-		port:          port,
-		events:        make(chan pms.Event, 100),
-		connections:   make(map[string]net.Conn),
+		host:        host,
+		port:        port,
+		events:      make(chan pms.Event, 100),
+		connections: make(map[string]net.Conn),
 	}
 
 	for _, opt := range opts {
@@ -158,7 +159,7 @@ func (a *Adapter) Connect(ctx context.Context) error {
 
 // connect establishes a TCP connection to the PMS (client mode)
 func (a *Adapter) connect(ctx context.Context) error {
-	addr := fmt.Sprintf("%s:%d", a.host, a.port)
+	addr := net.JoinHostPort(a.host, strconv.Itoa(a.port))
 	conn, err := net.DialTimeout("tcp", addr, 10*time.Second)
 	if err != nil {
 		return fmt.Errorf("connecting to FIAS PMS at %s: %w", addr, err)

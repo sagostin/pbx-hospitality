@@ -16,13 +16,28 @@ import (
 	"sync"
 	"time"
 
+	"github.com/prometheus/client_golang/prometheus"
+	"github.com/prometheus/client_golang/prometheus/promauto"
 	"github.com/rs/zerolog/log"
 
 	"github.com/sagostin/pbx-hospitality/internal/pbx"
 )
 
 // ErrWakeUpNotSupported is returned when wake-up calls are attempted on Zultys
-var ErrWakeUpNotSupported = errors.New("wake-up calls not directly supported on Zultys (requires external scheduler)")
+var ErrWakeUpNotSupported = errors.New("wake-up calls not supported on Zultys (requires external scheduler or migration to Bicom)")
+
+// wakeUpUnsupportedTotal counts wake-up requests rejected because the PBX
+// provider does not support them. Surfaced as
+// `hospitality_pbx_wakeup_unsupported_total{pbx,action}`.
+var wakeUpUnsupportedTotal = promauto.NewCounterVec(
+	prometheus.CounterOpts{
+		Namespace: "hospitality",
+		Subsystem: "pbx",
+		Name:      "wakeup_unsupported_total",
+		Help:      "Wake-up requests rejected because the PBX provider does not support them.",
+	},
+	[]string{"pbx", "action"},
+)
 
 func init() {
 	// Register this provider with the pbx registry
@@ -462,21 +477,38 @@ func (p *Provider) SetDND(ctx context.Context, ext string, on bool) error {
 	return nil
 }
 
-// ScheduleWakeUpCall is not directly supported on Zultys
-// Wake-up calls require an external scheduler (e.g., FreeSWITCH originate)
+// ScheduleWakeUpCall is not directly supported on Zultys.
+//
+// Zultys does not expose a wake-up API. The built-in PBX UI lets the guest
+// set their own wake-up via the phone's feature code, but there is no way
+// for an external system (PMS, hospitality service) to schedule one
+// programmatically on the guest's behalf.
+//
+// Operators relying on Zultys + PMS-driven wake-ups should either:
+//  1. Migrate the tenant to a PBX with a wake-up API (e.g. Bicom +
+//     ARI originate via WakeUpScheduler), or
+//  2. Use a FreeSWITCH/Asterisk sidecar that originates wake-up calls
+//     into the Zultys via SIP and plays a greeting.
+//
+// The error is intentionally loud (structured log + counter) so an
+// operator can spot misconfiguration via Prometheus.
 func (p *Provider) ScheduleWakeUpCall(ctx context.Context, ext string, wakeTime time.Time) error {
-	log.Warn().
+	log.Error().
 		Str("extension", ext).
-		Str("time", wakeTime.Format("15:04")).
-		Msg("Wake-up calls not supported on Zultys (requires external scheduler)")
+		Str("wake_time", wakeTime.Format("15:04")).
+		Msg("Zultys does not support scheduled wake-up calls; PMS request rejected. " +
+			"Migrate to Bicom or run a FreeSWITCH sidecar (see ROADMAP.md).")
+	wakeUpUnsupportedTotal.WithLabelValues("zultys", "schedule").Inc()
 	return ErrWakeUpNotSupported
 }
 
-// CancelWakeUpCall is not directly supported on Zultys
+// CancelWakeUpCall is not directly supported on Zultys.
 func (p *Provider) CancelWakeUpCall(ctx context.Context, ext string) error {
-	log.Warn().
+	log.Error().
 		Str("extension", ext).
-		Msg("Wake-up call cancellation not supported on Zultys")
+		Msg("Zultys does not support wake-up cancellation; PMS request rejected. " +
+			"See ROADMAP.md for migration options.")
+	wakeUpUnsupportedTotal.WithLabelValues("zultys", "cancel").Inc()
 	return ErrWakeUpNotSupported
 }
 

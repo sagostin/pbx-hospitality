@@ -332,7 +332,13 @@ func TestFiasListenerIPAllowlist(t *testing.T) {
 
 // TestFiasListenerClose tests that Close stops the listener
 func TestFiasListenerClose(t *testing.T) {
-	l := newTestFiasListener("localhost", 0)
+	// Use the production constructor so port=0 remaps to FiasDefaultPort
+	// (test helpers intentionally pass port through unchanged).
+	events := make(chan pms.Event, 100)
+	l, err := NewFiasListener(pms.ListenerConfig{ListenHost: "localhost", ListenPort: 0}, events)
+	if err != nil {
+		t.Fatalf("NewFiasListener failed: %v", err)
+	}
 	if l.Port() != FiasDefaultPort {
 		t.Errorf("default port = %d, want %d", l.Port(), FiasDefaultPort)
 	}

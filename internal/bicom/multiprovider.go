@@ -1,3 +1,14 @@
+// Package bicom — MultiProvider helper.
+//
+// MultiProvider is a load-balancer/failover helper over multiple Bicom PBXware
+// endpoints (priority-based + health tracking). It is currently UNUSED outside
+// its own tests. The single-endpoint codepath in internal/pbx/bicom/provider.go
+// is what the rest of the service consumes.
+//
+// This package is kept because the production deployment pattern for several
+// partners is "primary PBX + standby PBX + cloud failover", and MultiProvider
+// captures the priority/failover logic in one place. It should be wired into
+// internal/pbx/manager.go as the next iteration of multi-PBX support.
 package bicom
 
 import (

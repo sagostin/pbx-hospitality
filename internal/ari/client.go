@@ -1,3 +1,20 @@
+// Package ari is a thin ARI wrapper that was originally intended to power
+// the hospitality service's real-time call control. The current code path
+// instead uses github.com/CyCoreSystems/ari/v6/client/native directly from
+// internal/pbx/bicom/provider.go.
+//
+// This package is retained for two reasons:
+//
+//  1. It holds useful building blocks (reconnect with exponential backoff,
+//     mailbox state, originating calls) that are candidates to be promoted
+//     into the Bicom provider if/when we need finer-grained ARI control
+//     beyond what the CyCoreSystems client exposes.
+//
+//  2. Removing it requires updating imports across the repository; the package
+//     is intentionally self-contained so it can be deleted in one commit when
+//     the team confirms it is no longer needed.
+//
+// NOT WIRED. No callers outside this package.
 package ari
 
 import (

@@ -1,0 +1,47 @@
+name: CI
+
+on:
+  push:
+    branches: [main, master]
+  pull_request:
+    branches: [main, master]
+
+permissions:
+  contents: read
+
+jobs:
+  test:
+    name: test (go ${{ matrix.go }})
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        go: ["1.24", "1.25"]
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up Go
+        uses: actions/setup-go@v5
+        with:
+          go-version: ${{ matrix.go }}
+          cache: true
+
+      - name: Download modules
+        run: go mod download
+
+      - name: Build
+        run: |
+          mkdir -p bin
+          CGO_ENABLED=0 go build -ldflags="-w -s" -o bin/bicom-hospitality ./cmd/bicom-hospitality
+          CGO_ENABLED=0 go build -ldflags="-w -s" -o bin/site-connector ./cmd/site-connector
+
+      - name: go vet
+        run: go vet ./...
+
+      - name: Test (with race)
+        run: go test -race -count=1 ./...
+
+      - name: Test coverage
+        run: |
+          go test -count=1 -coverprofile=coverage.out -covermode=atomic ./...
+          go tool cover -func=coverage.out | tail -1

@@ -81,6 +81,7 @@ func NewRouterWithDB(tm *tenant.Manager, pbxMgr *pbx.Manager, cfg *config.Config
 	adminGroup.Delete("/:id/events/:eventID", admin.deleteTenantEvent)
 	adminGroup.Post("/:id/events/:eventID/retry", admin.retryTenantEvent)
 	adminGroup.Get("/:id/health", admin.getTenantHealth)
+	adminGroup.Get("/:id/capabilities", admin.getTenantCapabilities)
 
 	adminSitesGroup := app.Group("/admin/sites")
 	adminSitesGroup.Use(adminKeyMiddleware(cfg.Server.AdminAPIKey))

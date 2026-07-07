@@ -643,13 +643,31 @@ func (t *Tenant) handlePBXEvent(ctx context.Context, evt pbx.CallEvent) {
 	}
 }
 
-// handleEvent processes a single PMS event
+// handleEvent processes a single PMS event.
+//
+// Lifecycle:
+//  1. If the tenant has a DB, log the event to pms_events (processed=false)
+//     so it shows up in the audit log and in the admin retry queue.
+//  2. Run the appropriate handler.
+//  3. Mark the event processed (or failed with an error message).
 func (t *Tenant) handleEvent(ctx context.Context, evt pms.Event) {
 	start := time.Now()
 	eventType := evt.Type.String()
 
 	// Record event received
 	metrics.PMSEventsTotal.WithLabelValues(t.ID, eventType).Inc()
+
+	// Persist to audit log (non-blocking from the caller's perspective, but
+	// synchronous so ordering is preserved).
+	var eventID int64
+	if t.database != nil {
+		id, err := t.database.LogPMSEvent(ctx, t.ID, eventType, evt.Room, "", evt.RawData)
+		if err != nil {
+			log.Warn().Err(err).Str("tenant", t.ID).Msg("Failed to log PMS event to DB (continuing)")
+		} else {
+			eventID = id
+		}
+	}
 
 	log := log.With().
 		Str("tenant", t.ID).
@@ -662,12 +680,14 @@ func (t *Tenant) handleEvent(ctx context.Context, evt pms.Event) {
 	if err != nil {
 		log.Error().Err(err).Msg("Failed to map room to extension")
 		metrics.PMSEventErrors.WithLabelValues(t.ID, eventType, "mapping").Inc()
+		t.markEventFailed(ctx, eventID, err)
 		return
 	}
 
 	log = log.With().Str("extension", ext).Logger()
 	log.Info().Msg("Processing PMS event")
 
+	// Dispatch
 	switch evt.Type {
 	case pms.EventCheckIn:
 		t.handleCheckIn(ctx, ext, evt, log)
@@ -679,18 +699,24 @@ func (t *Tenant) handleEvent(ctx context.Context, evt pms.Event) {
 		// MWI control via PBX provider
 		if err := t.pbxProvider.SetMWI(ctx, ext, evt.Status); err != nil {
 			log.Error().Err(err).Msg("Failed to set MWI")
+			t.markEventFailed(ctx, eventID, err)
+			return
 		}
 
 	case pms.EventNameUpdate:
 		// Update extension name via PBX provider
 		if err := t.pbxProvider.UpdateExtensionName(ctx, ext, evt.GuestName); err != nil {
 			log.Error().Err(err).Msg("Failed to update extension name")
+			t.markEventFailed(ctx, eventID, err)
+			return
 		}
 
 	case pms.EventDND:
 		// Set DND via PBX provider
 		if err := t.pbxProvider.SetDND(ctx, ext, evt.Status); err != nil {
 			log.Error().Err(err).Msg("Failed to set DND")
+			t.markEventFailed(ctx, eventID, err)
+			return
 		}
 
 	case pms.EventWakeUp:
@@ -706,8 +732,31 @@ func (t *Tenant) handleEvent(ctx context.Context, evt pms.Event) {
 		log.Error().Err(err).Msg("Failed to send ACK")
 	}
 
+	t.markEventProcessed(ctx, eventID)
+
 	// Record processing duration
 	metrics.PMSEventDuration.WithLabelValues(t.ID, eventType).Observe(time.Since(start).Seconds())
+}
+
+// markEventProcessed marks the audit row as successfully processed.
+func (t *Tenant) markEventProcessed(ctx context.Context, eventID int64) {
+	if t.database == nil || eventID == 0 {
+		return
+	}
+	if err := t.database.MarkEventProcessed(ctx, eventID); err != nil {
+		log.Warn().Err(err).Int64("event_id", eventID).Msg("Failed to mark PMS event processed")
+	}
+}
+
+// markEventFailed marks the audit row as processed with an error message,
+// so the admin retry endpoint can find and replay it.
+func (t *Tenant) markEventFailed(ctx context.Context, eventID int64, evtErr error) {
+	if t.database == nil || eventID == 0 || evtErr == nil {
+		return
+	}
+	if err := t.database.MarkEventFailed(ctx, eventID, evtErr.Error()); err != nil {
+		log.Warn().Err(err).Int64("event_id", eventID).Msg("Failed to mark PMS event failed")
+	}
 }
 
 // handleCheckIn handles guest check-in event
@@ -764,37 +813,68 @@ func (t *Tenant) handleCheckOut(ctx context.Context, ext string, evt pms.Event, 
 	}
 }
 
-// handleWakeUp handles wake-up call scheduling from PMS
+// handleWakeUp handles wake-up call scheduling from PMS.
+//
+// The wake-up TIME comes from event metadata under one of these keys,
+// in order of preference:
+//
+//   - "TI"          — FIAS protocol field (HHMM)
+//   - "wakeup_time" — TigerTMS handler
+//   - "TI_RAW"      — escape hatch for adapters that want to bypass
+//     normalization (e.g. HH:MM with the colon intact)
+//
+// The PBX is informed via pbx.Provider.ScheduleWakeUpCall. For Bicom, this
+// toggles the operator-set wake-up state on the extension via the REST API
+// (the API has no time parameter — the actual ring-at-HH:MM is performed
+// by the WakeUpScheduler via ARI Originate). For Zultys, this returns
+// ErrWakeUpNotSupported and the call is surfaced as an error metric.
 func (t *Tenant) handleWakeUp(ctx context.Context, ext string, evt pms.Event, log zerolog.Logger) {
-	// Check if wake-up time is in metadata (FIAS uses TI field, format HHMM)
-	wakeTimeStr, ok := evt.Metadata["TI"]
-	if !ok || wakeTimeStr == "" {
+	wakeTimeStr := firstNonEmpty(evt.Metadata["TI"], evt.Metadata["wakeup_time"], evt.Metadata["TI_RAW"])
+	if wakeTimeStr == "" {
 		log.Warn().Msg("Wake-up call requested but no time specified")
+		metrics.PMSEventErrors.WithLabelValues(t.ID, "WakeUp", "no_time").Inc()
 		return
 	}
 
-	// Parse the wake-up time (format: HHMM)
 	wakeTime, err := t.parseWakeUpTime(wakeTimeStr)
 	if err != nil {
 		log.Error().Err(err).Str("time", wakeTimeStr).Msg("Failed to parse wake-up time")
+		metrics.PMSEventErrors.WithLabelValues(t.ID, "WakeUp", "parse_time").Inc()
 		return
 	}
 
-	// Schedule the wake-up call via PBX provider
 	if err := t.pbxProvider.ScheduleWakeUpCall(ctx, ext, wakeTime); err != nil {
 		log.Error().Err(err).Str("time", wakeTime.Format("15:04")).Msg("Failed to schedule wake-up call")
 		metrics.PMSEventErrors.WithLabelValues(t.ID, "WakeUp", "pbx_provider").Inc()
-	} else {
-		log.Info().
-			Str("time", wakeTime.Format("15:04")).
-			Str("timezone", t.timezone.String()).
-			Msg("Wake-up call scheduled")
+		return
 	}
+
+	log.Info().
+		Str("time", wakeTime.Format("15:04")).
+		Str("timezone", t.timezone.String()).
+		Msg("Wake-up call scheduled")
 }
 
-// parseWakeUpTime parses HHMM format time string into a time.Time in tenant timezone
-// If the time has already passed today, it schedules for tomorrow
+// firstNonEmpty returns the first non-empty string from the given list.
+func firstNonEmpty(values ...string) string {
+	for _, v := range values {
+		if v != "" {
+			return v
+		}
+	}
+	return ""
+}
+
+// parseWakeUpTime parses HHMM format time string into a time.Time in tenant timezone.
+// If the time has already passed today, it schedules for tomorrow.
+// Equivalent to parseWakeUpTimeAt(timeStr, time.Now()).
 func (t *Tenant) parseWakeUpTime(timeStr string) (time.Time, error) {
+	return t.parseWakeUpTimeAt(timeStr, time.Now())
+}
+
+// parseWakeUpTimeAt is parseWakeUpTime with an explicit "now" anchor.
+// Used in tests to make the roll-forward rule deterministic.
+func (t *Tenant) parseWakeUpTimeAt(timeStr string, now time.Time) (time.Time, error) {
 	// Normalize the time string (HHMM or HH:MM)
 	timeStr = strings.ReplaceAll(timeStr, ":", "")
 	if len(timeStr) != 4 {
@@ -804,7 +884,6 @@ func (t *Tenant) parseWakeUpTime(timeStr string) (time.Time, error) {
 	hour := timeStr[0:2]
 	minute := timeStr[2:4]
 
-	// Parse hours and minutes
 	h, err := strconv.Atoi(hour)
 	if err != nil || h < 0 || h > 23 {
 		return time.Time{}, fmt.Errorf("invalid hour: %s", hour)
@@ -814,14 +893,11 @@ func (t *Tenant) parseWakeUpTime(timeStr string) (time.Time, error) {
 		return time.Time{}, fmt.Errorf("invalid minute: %s", minute)
 	}
 
-	// Get current time in tenant's timezone
-	now := time.Now().In(t.timezone)
+	nowInZone := now.In(t.timezone)
 
-	// Create wake-up time for today in tenant timezone
-	wakeTime := time.Date(now.Year(), now.Month(), now.Day(), h, m, 0, 0, t.timezone)
+	wakeTime := time.Date(nowInZone.Year(), nowInZone.Month(), nowInZone.Day(), h, m, 0, 0, t.timezone)
 
-	// If the time has already passed today, schedule for tomorrow
-	if wakeTime.Before(now) {
+	if wakeTime.Before(nowInZone) {
 		wakeTime = wakeTime.Add(24 * time.Hour)
 	}
 
@@ -833,6 +909,11 @@ func (t *Tenant) PBXProvider() pbx.Provider {
 	return t.pbxProvider
 }
 
+// PMSAdapter returns the tenant's PMS adapter (for capability inspection).
+func (t *Tenant) PMSAdapter() pms.Adapter {
+	return t.pmsAdapter
+}
+
 // Status returns the tenant's current status
 func (t *Tenant) Status() TenantStatus {
 	return TenantStatus{
@@ -842,6 +923,16 @@ func (t *Tenant) Status() TenantStatus {
 		PBXConnected:   t.pbxProvider != nil && t.pbxProvider.Connected(),
 		ReconnectCount: t.reconnects,
 	}
+}
+
+// bumpReconnect increments the reconnect counter under a mutex. The counter
+// is exposed via the Status struct so operators can see whether a tenant is
+// flapping. It is incremented from the per-tenant supervisor goroutine only,
+// so a plain atomic add would suffice; we use the existing struct mutex
+// pattern to keep the public surface small.
+func (t *Tenant) bumpReconnect() {
+	t.reconnects++
+	metrics.ConnectorReconnectTotal.WithLabelValues(t.ID, "tenant").Inc()
 }
 
 // TenantStatus represents the current state of a tenant

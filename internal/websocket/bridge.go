@@ -1,6 +1,21 @@
-// Package websocket implements a WebSocket bridge for forwarding PMS events
-// to the cloud platform with multi-tenant routing and exponential backoff
-// reconnection.
+// Package websocket implements WebSocket-based transport for the hospitality
+// service.
+//
+// This package contains two implementations:
+//
+//   - bridge.go    — *legacy / unused* WebSocket bridge for forwarding PMS
+//     events to a remote cloud platform with exponential-backoff
+//     reconnection. NOT WIRED into cmd/bicom-hospitality or
+//     cmd/site-connector. Kept here because the underlying
+//     mechanism (multi-tenant WS forwarding with reconnect) is
+//     still a planned capability; the production site-connector
+//     currently uses internal/output/resilient.go (HTTPS / WSS
+//     with on-disk spool buffering) instead. See
+//     docs/future-considerations.md and the readme TODO.
+//
+//   - logsink.go   — the live log tail endpoint mounted at /ws/logs by
+//     cmd/bicom-hospitality when cfg.Logging.WebSocketLogs.Enabled
+//     is true. ACTIVE.
 package websocket
 
 import (
