@@ -79,6 +79,76 @@ tenants:
 | Wake-Up Ring | ARI | `Channels.Originate` via WakeUpScheduler (Tier 1) |
 | Call Forward | REST API | `pbxware.ext.es.callfwd.set` |
 
+### Capabilities
+
+`pbx.ProviderWithCapabilities.Capabilities()` returns:
+
+| Capability | Bicom | Notes |
+|---|---|---|
+| `SupportsWakeUpCalls` | ✅ (if apiClient) | toggles the PBX wake-up state |
+| `SupportsWakeUpOrigination` | ✅ (if ariClient) | ARI `Channels.Originate` |
+| `SupportsVoicemailGreeting` | ✅ (if apiClient) | |
+| `SupportsCallForward` | ✅ (if apiClient) | |
+| `SupportsMWI` | ✅ | ARI mailbox update |
+| `SupportsDND` | ✅ | REST API |
+| `SupportsInboundEvents` | ✅ (if ARI URL set) | ARI WebSocket + HTTP webhook |
+
+Inspect at runtime:
+
+```bash
+curl -H "X-Admin-Key: $KEY" http://localhost:8080/admin/tenants/hotel-alpha/capabilities
+```
+
+```json
+{
+  "pbx": {
+    "supports_wake_up_calls": true,
+    "supports_wake_up_origination": true,
+    "supports_voicemail_greeting": true,
+    "supports_call_forward": true,
+    "supports_mwi": true,
+    "supports_dnd": true,
+    "supports_inbound_events": true
+  },
+  "pms": { "protocol": "fias", "connected": true },
+  "notes": [
+    "Wake-up state is toggled on the PBX via REST. The actual ring-at-HH:MM is performed by the WakeUpScheduler via ARI Originate."
+  ]
+}
+```
+
+### Wake-Up Call Pipeline (Tier 0 + Tier 1)
+
+```mermaid
+sequenceDiagram
+    autonumber
+    participant PMS as PMS<br/>(FIAS / TigerTMS / Mitel / Mews / Cloudbeds)
+    participant Adapter as PMS Adapter
+    participant Tenant as Tenant.handleWakeUp
+    participant REST as Bicom REST API
+    participant DB as wakeup_calls table
+    participant Sched as WakeUpScheduler<br/>(in-process)
+    participant ARI as ARI / SIP
+
+    PMS->>Adapter: wake-up event with time
+    Adapter->>Tenant: pms.Event{Type: EventWakeUp,<br/>Metadata: {TI / wakeup_time / TI_RAW}}
+    Tenant->>REST: POST pbxware.ext.es.opwakeupcall.set<br/>id={ext}&state=yes
+    REST-->>Tenant: success
+    Tenant->>DB: INSERT wakeup_calls status='pending'
+    Note over Sched: tick every 10s
+    Sched->>DB: SELECT pending where scheduled_at <= NOW()
+    Sched->>ARI: Channels.Originate(<br/>endpoint=PJSIP/{ext},<br/>App=wakeup, AppArgs={ext},<br/>Timeout=30s)
+    ARI-->>Sched: channel accepted
+    Sched->>DB: UPDATE status='originated', originated_at=NOW()
+    Note over ARI: rings the room; Stasis app can play greeting
+```
+
+**Operator setup required:** register a Stasis app named `wakeup` in
+PBXware so `App=wakeup` lands somewhere that answers + plays a greeting
++ hangs up. A minimal `[wakeup]` context with
+`exten => s,1,Answer() → Wait(2) → Hangup()` is enough; a real
+implementation plays a per-tenant greeting.
+
 > **Wake-up calls on Bicom are a two-part operation.** The REST API
 > (`opwakeupcall.set state=yes`) toggles whether the extension has a wake-up
 > scheduled; the service's **WakeUpScheduler** then uses ARI to originate
@@ -161,16 +231,30 @@ X-Webhook-Signature: <HMAC-SHA256 hex digest of body>
 | MWI | POST `/extensions/{ext}/mwi` | ✅ Supported |
 | DND | POST `/extensions/{ext}/dnd` | ✅ Supported |
 | Call Forward | POST `/extensions/{ext}/forward` | ✅ Supported |
-| Wake-Up Calls | N/A | ❌ Not supported |
+| Wake-Up Calls | N/A | ❌ Not supported (state toggle + ring) |
+| Wake-Up Origination | N/A | ❌ Not supported |
 
 > **Note:** These are placeholder endpoints. Update with actual Zultys API paths when available.
+
+### Capabilities
+
+| Capability | Zultys | Notes |
+|---|---|---|
+| `SupportsWakeUpCalls` | ❌ | no schedule API |
+| `SupportsWakeUpOrigination` | ❌ | no SIP-originate API |
+| `SupportsVoicemailGreeting` | ✅ | |
+| `SupportsCallForward` | ✅ | |
+| `SupportsMWI` | ✅ | |
+| `SupportsDND` | ✅ | |
+| `SupportsInboundEvents` | ✅ | HTTP webhook |
 
 ### Wake-Up Call Limitation
 
 **Zultys does not provide a native API for scheduled wake-up calls.**
-ScheduleWakeUpCall / CancelWakeUpCall on the Zultys provider returns
-`ErrWakeUpNotSupported` and emits a structured error log + counter
-(`hospitality_pbx_wakeup_unsupported_total{pbx="zultys",action}`).
+ScheduleWakeUpCall / CancelWakeUpCall / OriginateWakeUp on the Zultys
+provider returns `ErrWakeUpNotSupported` / `ErrOriginateNotSupported`
+and emits a structured error log + counter
+(`hospitality_pbx_wakeup_unsupported_total{pbx="zultys",action="schedule|cancel|originate"}`).
 
 Operators relying on Zultys + PMS-driven wake-ups have three options:
 
@@ -178,8 +262,24 @@ Operators relying on Zultys + PMS-driven wake-ups have three options:
    Bicom REST API + WakeUpScheduler + ARI).
 2. **Run a FreeSWITCH / Asterisk sidecar** that originates wake-up calls
    into the Zultys via SIP and plays a greeting.
+
+```mermaid
+flowchart LR
+    PMS[PMS<br/>wake-up event]
+    H[Hospitality service]
+    DB[(wakeup_calls)]
+    FS[FreeSWITCH sidecar<br/>sip originate]
+    Z[Zultys<br/>SIP leg]
+
+    PMS --> H
+    H --> DB
+    H -->|"(Tier 4)"| FS
+    FS --> Z
+```
+
 3. **Let the guest set their own wake-up** via the room phone's feature
-   code — the PMS wake-up event will be rejected.
+   code — the PMS wake-up event will be rejected and the row marked
+   `failed`.
 
 You can verify a tenant's capabilities at runtime:
 

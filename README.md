@@ -44,7 +44,12 @@ Both are built from this repo and share the protocol adapter layer.
 - **Real-time Sync**: Guest check-in/out immediately updates phone extensions
 - **Message Waiting**: Automatic MWI lamp control from PMS (and from PBX voicemail webhooks)
 - **Room Mapping**: Individual, range, and regex pattern mappings
-- **Wake-Up Calls**: Schedule via PBX API, parsed from PMS metadata (`TI` field)
+- **Wake-Up Calls**: PMS drives a two-part pipeline — REST state
+  toggle on the PBX + in-process `WakeUpScheduler` firing the actual
+  call via ARI `Channels.Originate` at `scheduled_at`. Wake-up time
+  parsed from PMS metadata (`TI` field for FIAS, `wakeup_time` for
+  TigerTMS). Bicom only; Zultys loud-fails with a counter so
+  misconfigurations surface in Prometheus.
 - **Extension Management**: Update names, service plans
 - **Voicemail Control**: Delete all messages and reset greeting on guest checkout
 - **Webhook Support**: Receive PBX call events via HTTP (Bicom + Zultys)
@@ -185,12 +190,48 @@ graph LR
 Key files:
 
 - `internal/pms/protocol.go` — `Adapter`, `Listener`, registries
-- `internal/pbx/interface.go` — `Provider`, `EventProvider`, `WebhookProvider`
+- `internal/pbx/interface.go` — `Provider`, `EventProvider`, `WebhookProvider`, `OriginateWakeUp`
 - `internal/tenant/manager.go` — per-tenant pipeline (PMS → handler → PBX)
+- `internal/wakeup/scheduler.go` — `WakeUpScheduler` (in-process, fires ARI originate at scheduled_at)
 - `internal/db/db.go` — GORM models + AutoMigrate
 - `internal/api/api.go` — Fiber HTTP routes
 
 For a deeper view see [`docs/architecture.md`](docs/architecture.md).
+
+## Wake-Up Call Pipeline
+
+```mermaid
+sequenceDiagram
+    autonumber
+    participant PMS as PMS<br/>(FIAS / TigerTMS / Mitel / Mews / Cloudbeds)
+    participant Tenant as Tenant.handleWakeUp
+    participant REST as Bicom REST API
+    participant DB as wakeup_calls table
+    participant Sched as WakeUpScheduler
+    participant ARI as ARI / SIP
+
+    PMS->>Tenant: wake-up event with time
+    Tenant->>REST: POST opwakeupcall.set state=yes
+    Tenant->>DB: INSERT wakeup_calls (status=pending)
+    Note over Sched: tick every 10s
+    Sched->>DB: SELECT pending where scheduled_at <= NOW()
+    Sched->>ARI: Channels.Originate(endpoint=PJSIP/{ext},<br/>App=wakeup, Timeout=30s)
+    ARI-->>Sched: channel accepted
+    Sched->>DB: UPDATE status='originated'
+```
+
+Two-part operation: the Bicom REST API only supports state toggling
+(no time parameter), so the in-process `WakeUpScheduler` fires the
+actual call at `scheduled_at` via ARI. Register a Stasis app named
+`wakeup` in PBXware so `App=wakeup` lands somewhere that answers +
+plays a greeting + hangs up. Zultys loud-fails with
+`hospitality_pbx_wakeup_unsupported_total`.
+
+Inspect at runtime:
+```bash
+curl -H "X-Admin-Key: $KEY" http://localhost:8080/admin/tenants/{id}/capabilities
+curl -H "X-Admin-Key: $KEY" http://localhost:8080/admin/tenants/{id}/wakeups
+```
 
 ## API Endpoints
 
@@ -288,6 +329,7 @@ root. They DO require a working network stack (loopback).
 ### Guides
 
 - [Architecture](docs/architecture.md) — System design, components, sequence diagrams
+- [Data Flow Index](docs/DATA-FLOW.md) — single-page mermaid index of every flow
 - [PBX Providers](docs/pbx-providers.md) — Bicom, Zultys, how to add a new one
 - [Deployment](docs/deployment.md) — Production deployment
 - [Protocols](docs/protocols.md) — PMS protocol specifications

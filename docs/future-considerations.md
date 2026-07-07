@@ -138,46 +138,62 @@ retention:
 
 ## Additional Protocol Support
 
-### Future PMS Protocols
+### PMS Protocol Status
 
-| Protocol | Vendor | Status |
-|----------|--------|--------|
-| **TigerTMS iLink** | TigerTMS | Documented |
-| **HTNG** | Generic hospitality | Planned |
-| **Hilton PEP** | Hilton | On request |
-| **Hyatt HIS** | Hyatt | On request |
-| **Marriott FOSSE** | Marriott | On request |
-| **FIAS over HTTPS** | Cloud vendors | Planned |
+| Protocol | Status | Tier | Notes |
+|----------|--------|------|-------|
+| **Mitel SX-200** | ✅ | shipped | Connect + listen modes |
+| **Oracle FIAS / Fidelio** | ✅ | shipped | Connect + listen modes |
+| **TigerTMS iLink** | ✅ | shipped (Tier 0 wake-up fix) | COS/DDI round-out is Tier 2 |
+| **ASIP** | 📋 | Tier 3 | Reuses `fias/` parser with different LR record set |
+| **HTNG** | 📋 | Tier 3+ | Vendor-neutral, JSON over HTTPS, needs a real parser |
+| **Mews** | 📋 | Tier 3 | REST + webhooks, OAuth/API key |
+| **Cloudbeds** | 📋 | Tier 3 | REST + webhooks, OAuth |
+| **Hilton PEP** | ❌ | on request | FIAS-flavored |
+| **Hyatt HIS** | ❌ | on request | FIAS-flavored |
+| **Marriott FOSSE** | ❌ | on request | Closed, FIAS-shaped |
 
 ### Wake-Up Call Enhancements
 
-- **IVR confirmation** - Guest presses 1 to confirm wake-up
-- **Retry logic** - Multiple attempts with escalation
-- **PMS callback** - Notify PMS of wake-up completion/failure
+- ✅ **State toggle (Tier 0)** — `pbxware.ext.es.opwakeupcall.set` toggles
+  whether the extension has a wake-up scheduled. Bicom only accepts a
+  `state` parameter; the actual time is held by the PBX.
+- ✅ **ARI Originate at scheduled time (Tier 1)** — `WakeUpScheduler`
+  fires the call via `ari.Client.Channel().Originate` to the extension
+  using a `wakeup` Stasis app.
+- 📋 **IVR confirmation** — Tier 2/3: add a Stasis app that prompts
+  "press 1 to confirm" before hanging up.
+- 📋 **Retry logic** — Tier 2: if the line is busy / no-answer, retry
+  after N minutes.
+- 📋 **PMS callback** — Tier 4: outbound webhook fires `wakeup_completed`
+  / `wakeup_failed` events back to the PMS.
 
-### Zultys Wake-Up Call Scheduler
+### Zultys Wake-Up Path (currently loud-fail)
 
-Zultys does not provide a native wake-up call API. For Zultys deployments requiring wake-up calls:
+Zultys does not provide a native wake-up call API. ScheduleWakeUpCall /
+OriginateWakeUp on the Zultys provider returns `ErrWakeUpNotSupported`
+and increments `hospitality_pbx_wakeup_unsupported_total`. The current
+remediation paths are:
 
-| Component | Description |
-|-----------|-------------|
-| **Call Scheduler** | PostgreSQL table storing scheduled wake-up times |
-| **FreeSWITCH Originator** | Cron-triggered service that originates calls at scheduled times |
-| **Wake-Up IVR** | FreeSWITCH dialplan plays announcement, optionally waits for confirmation |
-| **Result Callback** | Reports success/failure back to hospitality service |
+```mermaid
+flowchart TB
+    subgraph Available["Available today"]
+        A1["Migrate tenant to Bicom<br/>(recommended)"]
+        A2["Let guest set own wake-up<br/>via room phone feature code"]
+    end
 
+    subgraph Tier5["Planned"]
+        B1["FreeSWITCH / Asterisk sidecar<br/>originating wake-up calls into Zultys via SIP"]
+        B2["Auto-orchestrate sidecar<br/>from wakeup_calls table"]
+    end
+
+    Today --> Available
+    Future --> Tier5
 ```
-┌──────────────┐     ┌───────────────┐     ┌─────────────┐
-│ Hospitality  │────▶│  PostgreSQL   │────▶│ FreeSWITCH  │
-│ Service      │     │  (scheduler)  │     │ Originator  │
-└──────────────┘     └───────────────┘     └──────┬──────┘
-                                                   │
-                                                   ▼
-                                           ┌─────────────┐
-                                           │   Zultys    │
-                                           │   (SIP)     │
-                                           └─────────────┘
-```
+
+The wakeup_calls table is already the source of truth — a sidecar
+implementation only needs to watch the table and originate SIP calls
+into the Zultys. No service-side changes are needed.
 
 ---
 
@@ -252,12 +268,26 @@ api:
 
 ## Implementation Priority
 
-| Feature | Priority | Effort | Notes |
-|---------|----------|--------|-------|
-| TigerTMS Implementation | High | Medium | Documentation complete |
-| IP Whitelisting | Medium | Low | Customer request driven |
-| Cloud PMS Auth | High | Medium | Needed for SaaS vendors |
-| TLS/mTLS | High | Medium | Security requirement |
-| Retry with Backoff | High | Low | Reliability improvement |
-| Webhooks | Medium | Medium | Integration feature |
-| Additional Protocols | Low | High | Per-customer need |
+Status reflects the work completed in [ROADMAP.md](../ROADMAP.md) Tier 0
+and Tier 1 (2026-07). For active TODOs, see `ROADMAP.md` §3+.
+
+| Feature | Status | Priority | Effort | Notes |
+|---------|--------|----------|--------|-------|
+| TigerTMS Implementation | ✅ done | — | — | Tier 0 wake-up fix; Tier 2 round-out next |
+| WakeUpScheduler + ARI originate | ✅ done | — | — | Tier 1 — see `internal/wakeup` |
+| Bicom wake-up via `opwakeupcall.set` | ✅ done | — | — | Tier 0 |
+| Zultys wake-up loud-fail + counter | ✅ done | — | — | Tier 0 |
+| `/admin/tenants/{id}/capabilities` | ✅ done | — | — | Tier 0 |
+| Mitel `WAK` parser | 📋 TODO | high | low | Tier 2 |
+| TigerTMS COS / DDI / reservation_id | 📋 TODO | high | medium | Tier 2 |
+| Dynamic extension provisioning | 📋 TODO | high | medium | Use existing `pbxware.ext.add` |
+| Tenant reconnect supervisor | 📋 TODO | high | medium | Reliability win |
+| `pbx.Manager` ↔ `tenant.Manager` reconcile | 📋 TODO | medium | medium | Two parallel PBX models |
+| Outbound webhooks (hospitality → PMS) | 📋 TODO | medium | medium | Tier 4 |
+| ASIP / Mews / Cloudbeds adapters | 📋 TODO | medium | high | Tier 3 |
+| FreeSWITCH sidecar for Zultys wake-up | 📋 TODO | low | high | Operational, not code |
+| IP Whitelisting | 📋 TODO | medium | low | Customer request driven |
+| Cloud PMS Auth (OAuth2, etc.) | 📋 TODO | high | medium | Needed for SaaS vendors |
+| TLS / mTLS for PMS connections | 📋 TODO | high | medium | Security requirement |
+| HTNG adapter | 📋 TODO | low | high | Per-customer need |
+| Hilton PEP / Hyatt HIS / Marriott FOSSE | 📋 TODO | low | high | Closed, partner-specific |

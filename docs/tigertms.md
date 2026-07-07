@@ -32,18 +32,17 @@ With TigerTMS, **we expose HTTP endpoints** that receive events from the middlew
 
 ## Architecture
 
-```
-┌─────────────────┐     ┌─────────────────┐     ┌─────────────────────┐
-│   Hotel PMS     │     │   TigerTMS      │     │   Bicom Hospitality │
-│ (Opera, Shiji)  │────▶│   iLink         │────▶│   Integration       │
-│                 │     │   Middleware    │     │   (HTTP Endpoints)  │
-└─────────────────┘     └─────────────────┘     └─────────────────────┘
-                                                         │
-                                                         ▼
-                                                ┌─────────────────┐
-                                                │   Bicom PBXware │
-                                                │   (ARI + API)   │
-                                                └─────────────────┘
+```mermaid
+flowchart LR
+    PMS[Hotel PMS<br/>Opera / Shiji / Cloudbeds / Mews]
+    ILink[TigerTMS iLink<br/>Middleware]
+    Service[Bicom Hospitality<br/>HTTP endpoints<br/>POST /tigertms/{tenant}/API/*]
+    PBX[Bicom PBXware<br/>ARI + REST API]
+
+    PMS -- "PMS-native protocol" --> ILink
+    ILink -- "HTTPS push" --> Service
+    Service -- "REST API + ARI" --> PBX
+    PBX -- "voicemail/webhook (reverse)" --> Service
 ```
 
 TigerTMS iLink:
@@ -51,6 +50,10 @@ TigerTMS iLink:
 2. Translates PMS events to a standardized REST API format
 3. Posts events to our HTTP endpoints
 4. Optionally receives callbacks for CDR posting
+
+The TigerTMS handler is mounted dynamically at startup for every tenant
+whose `pms.protocol` is `tigertms`. See `internal/api/api.go:128-158` for
+the route registration.
 
 ---
 
@@ -221,6 +224,11 @@ Schedules or cancels a wake-up call.
 POST /API/setwakeup?room=2129&time=07:00&enabled=true
 ```
 
+> **Tier 0 (2026-07):** The handler stores the time under metadata key
+> `wakeup_time`. The tenant manager reads the time from
+> `evt.Metadata["TI"]` first, then falls back to `wakeup_time` and
+> `TI_RAW`. Both forms are accepted.
+
 ---
 
 ### Call Detail Records (CDR)
@@ -301,15 +309,22 @@ Alternatively, use an `X-Tenant-ID` header if configured.
 
 ## Event Mapping
 
-| TigerTMS Endpoint | PMS Event Type | Bicom Action |
-|-------------------|----------------|--------------|
-| `/API/setguest` (checkin=true) | Check-In | Update extension, set caller ID |
-| `/API/setguest` (checkin=false) | Check-Out | Clear caller ID, delete voicemail |
-| `/API/setmw` | Message Waiting | Update MWI via ARI/API |
-| `/API/setdnd` | Do Not Disturb | Set DND via API |
-| `/API/setwakeup` | Wake-Up Call | Schedule via Bicom API |
-| `/API/setcos` | Class of Service | Update service plan |
-| `/API/setsipdata` | Name Update | Update extension caller ID |
+| TigerTMS Endpoint | pms.Event Type | Bicom Action | Status |
+|-------------------|----------------|--------------|--------|
+| `/API/setguest` (checkin=true) | CheckIn | Update extension name, set guest session | ✅ Tier 0 |
+| `/API/setguest` (checkin=false) | CheckOut | Clear name, delete voicemails, reset greeting, cancel wake-up | ✅ Tier 0 |
+| `/API/setmw` | MessageWaiting | SetMWI via ARI mailbox update | ✅ |
+| `/API/setdnd` | DND | SetDND via REST API | ✅ |
+| `/API/setwakeup` | WakeUp | `opwakeupcall.set state=yes` + `WakeUpScheduler` fires via ARI Originate | ✅ Tier 0+1 |
+| `/API/setsipdata` | NameUpdate | Update extension caller ID | ✅ |
+| `/API/setcos` | RoomStatus (with `class_of_service` metadata) | **No consumer — TODO Tier 2** | ⚠️ |
+| `/API/setddi` | RoomStatus (with `ddi` metadata) | **No consumer — TODO Tier 2** | ⚠️ |
+| `/API/CDR` | RoomStatus (with `cdr_*` metadata) | Logged, persisted to `pms_events` | ✅ |
+
+> **Tier 2 TODO:** `/API/setcos` and `/API/setddi` events are emitted but
+> the tenant manager has no consumer for them. Class of Service should
+> call `pbxware.ext.edit service_plan=…` on Bicom; DDI should assign a
+> DID via `pbxware.did.edit`.
 
 ---
 

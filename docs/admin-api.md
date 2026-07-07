@@ -539,6 +539,81 @@ GET /admin/tenants/{id}/health
 }
 ```
 
+### Get Tenant Capabilities
+
+```http
+GET /admin/tenants/{id}/capabilities
+```
+
+Returns the runtime capability matrix for the tenant's PMS + PBX stack.
+Useful for detecting misconfigurations like a Zultys tenant receiving
+PMS wake-up events, or a Bicom tenant without ARI configured.
+
+**Response:**
+```json
+{
+  "pbx": {
+    "supports_wake_up_calls": true,
+    "supports_wake_up_origination": true,
+    "supports_voicemail_greeting": true,
+    "supports_call_forward": true,
+    "supports_mwi": true,
+    "supports_dnd": true,
+    "supports_inbound_events": true
+  },
+  "pms": { "protocol": "tigertms", "connected": true },
+  "notes": [
+    "Wake-up state is toggled on the PBX via REST. The actual ring-at-HH:MM is performed by the WakeUpScheduler via ARI Originate."
+  ]
+}
+```
+
+The `notes` array always contains a recommendation when `supports_wake_up_calls` is false.
+
+### List Tenant Wake-Up Calls
+
+```http
+GET /admin/tenants/{id}/wakeups?limit=50
+```
+
+Returns the most recent wake-up rows for a tenant (all statuses: pending,
+originated, completed, failed, cancelled).
+
+**Query Parameters:**
+
+| Parameter | Type | Default | Max | Description |
+|-----------|------|---------|-----|-------------|
+| `limit` | int | 50 | 500 | Number of rows |
+
+**Response:**
+```json
+[
+  {
+    "id": 42,
+    "tenant_id": "hotel-alpha",
+    "extension": "1101",
+    "scheduled_at": "2026-07-08T07:30:00Z",
+    "status": "originated",
+    "attempt_count": 1,
+    "last_error": "",
+    "created_at": "2026-07-07T20:15:32Z",
+    "originated_at": "2026-07-08T07:30:01Z",
+    "completed_at": null,
+    "metadata": "{\"source\":\"wake_up\"}"
+  }
+]
+```
+
+Status values:
+
+| Status | Meaning |
+|--------|---------|
+| `pending` | Scheduled but `scheduled_at` not yet reached |
+| `originated` | ARI `Channels.Originate` accepted by Asterisk |
+| `completed` | Call answered + hung up (Tier 2 will set this from ARI hangup events) |
+| `failed` | Originate rejected (busy, no-answer, no provider) |
+| `cancelled` | PMS sent a wake-up cancel event or tenant check-out |
+
 ---
 
 ## Bicom Systems
