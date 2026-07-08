@@ -206,8 +206,8 @@ flowchart LR
         S_MITEL["listener.MitelListener<br/>tcp 0.0.0.0 port 23"]
     end
 
-    subgraph Push["HTTP push - middleware POSTs"]
-        T_TIGER["tigertms.Handler<br/>POST /tigertms/{tenant}/API/*"]
+subgraph Push["HTTP push - iLink middleware POSTs to us"]
+        T_TIGER["tigertms.Handler<br/>POST /api/v1/pms/inbound/<token>/API/*<br/>token-hash + bearer/basic auth"]
     end
 
     PMS["PMS / Middleware"]
@@ -404,3 +404,4 @@ If you're onboarding to the codebase, read in this order:
 6. [api-reference.md](api-reference.md) + [admin-api.md](admin-api.md) — HTTP surface
 7. [deployment.md](deployment.md) — go from code to running service
 8. [ROADMAP.md](../ROADMAP.md) — what's done, what's next
+9. **TigerTMS tenants:** [integrations/tigertms-ilink-protocol.md](integrations/tigertms-ilink-protocol.md) (actual wire format + URL-token auth model) + [integrations/tigertms-cloud-backend.md](integrations/tigertms-cloud-backend.md) (gap doc + tier plan + dynamic router) — supersedes the TigerTMS sections of [tigertms.md](tigertms.md) and [protocols.md](protocols.md).

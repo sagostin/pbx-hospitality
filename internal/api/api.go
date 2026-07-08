@@ -1,6 +1,7 @@
 package api
 
 import (
+	"context"
 	"net/http"
 	"strconv"
 	"time"
@@ -24,12 +25,12 @@ import (
 )
 
 type Server struct {
-	tm               *tenant.Manager
-	pbxMgr           *pbx.Manager
-	cfg              *config.Config
-	db               *db.DB
-	tigertmsHandlers map[*fiber.App]string
-	logSink          *websocket.LogSink
+	tm      *tenant.Manager
+	pbxMgr  *pbx.Manager
+	cfg     *config.Config
+	db      *db.DB
+	ilink   *tigertms.Handler
+	logSink *websocket.LogSink
 }
 
 func NewRouter(tm *tenant.Manager, pbxMgr *pbx.Manager, cfg *config.Config) http.Handler {
@@ -38,11 +39,12 @@ func NewRouter(tm *tenant.Manager, pbxMgr *pbx.Manager, cfg *config.Config) http
 
 func NewRouterWithDB(tm *tenant.Manager, pbxMgr *pbx.Manager, cfg *config.Config, database *db.DB) http.Handler {
 	s := &Server{
-		tm:               tm,
-		pbxMgr:           pbxMgr,
-		cfg:              cfg,
-		db:               database,
-		tigertmsHandlers: make(map[*fiber.App]string),
+		tm:      tm,
+		pbxMgr:  pbxMgr,
+		cfg:     cfg,
+		db:      database,
+		ilink:   tigertms.NewHandler(),
+		logSink: nil,
 	}
 	app := fiber.New(fiber.Config{
 		DisableStartupMessage: true,
@@ -82,7 +84,13 @@ func NewRouterWithDB(tm *tenant.Manager, pbxMgr *pbx.Manager, cfg *config.Config
 	adminGroup.Post("/:id/events/:eventID/retry", admin.retryTenantEvent)
 	adminGroup.Get("/:id/wakeups", admin.listTenantWakeUps)
 	adminGroup.Get("/:id/health", admin.getTenantHealth)
-	adminGroup.Get("/:id/capabilities", admin.getTenantCapabilities)
+
+	// Tenant inbound tokens (per-tenant authentication credentials for
+	// inbound PMS HTTP endpoints). See admin_tokens.go for handler
+	// implementations.
+	adminGroup.Post("/:id/tokens", admin.createTenantToken)
+	adminGroup.Get("/:id/tokens", admin.listTenantTokens)
+	adminGroup.Delete("/:id/tokens/:tokenId", admin.revokeTenantToken)
 
 	adminSitesGroup := app.Group("/admin/sites")
 	adminSitesGroup.Use(adminKeyMiddleware(cfg.Server.AdminAPIKey))
@@ -128,6 +136,7 @@ func NewRouterWithDB(tm *tenant.Manager, pbxMgr *pbx.Manager, cfg *config.Config
 	apiV1.Post("/pbx/webhook/:tenant", s.handlePBXWebhook)
 
 	if database != nil {
+		s.ilink.SetResolver(newDBTokenResolver(database))
 		tenants, err := database.ListTenants(nil)
 		if err == nil {
 			for _, t := range tenants {
@@ -136,31 +145,37 @@ func NewRouterWithDB(tm *tenant.Manager, pbxMgr *pbx.Manager, cfg *config.Config
 				}
 				pmsCfg := parseJSONMap(t.PMSConfig)
 				protocol, _ := pmsCfg["protocol"].(string)
-				if protocol == "tigertms" {
-					authToken, _ := pmsCfg["auth_token"].(string)
-					pathPrefix, _ := pmsCfg["path_prefix"].(string)
-					adapter, err := pms.NewAdapter("tigertms", "", 0, tigertms.WithAuthToken(authToken))
-					if err != nil {
-						log.Error().Err(err).Str("tenant", t.ID).Msg("Failed to create TigerTMS adapter for API router")
-						continue
-					}
-					tigerAdapter, ok := adapter.(*tigertms.Adapter)
-					if !ok {
-						log.Error().Str("tenant", t.ID).Msg("TigerTMS adapter is wrong type")
-						continue
-					}
-					handler := tigertms.NewHandler(tigerAdapter)
-					fiberApp := fiber.New()
-					handler.Routes(fiberApp)
-					s.tigertmsHandlers[fiberApp] = t.ID
-
-					log.Info().Str("tenant", t.ID).Str("path_prefix", pathPrefix).Msg("TigerTMS HTTP handler registered")
+				if protocol != "tigertms" && protocol != "tigertms_ilink" {
+					continue
 				}
+				siteid, _ := pmsCfg["siteid"].(string)
+				adapter, err := pms.NewAdapter(protocol, "", 0, tigertms.WithTenant(t.ID, siteid))
+				if err != nil {
+					log.Error().Err(err).Str("tenant", t.ID).Msg("Failed to create TigerTMS adapter")
+					continue
+				}
+				tigerAdapter, ok := adapter.(*tigertms.Adapter)
+				if !ok {
+					log.Error().Str("tenant", t.ID).Msg("TigerTMS adapter is wrong type")
+					continue
+				}
+				if err := tigerAdapter.Connect(context.Background()); err != nil {
+					log.Error().Err(err).Str("tenant", t.ID).Msg("Failed to connect TigerTMS adapter")
+					continue
+				}
+				s.ilink.RegisterTenant(t.ID, tigerAdapter)
 			}
 		}
 	}
 
-	app.Post("/tigertms/:tenant/API/*", s.handleTigerTMS)
+	// TigerTMS iLink inbound — single mount, multi-tenant dispatch via
+	// the URL token (long random secret) in the path. The DB-backed
+	// token resolver maps the hash to a tenant and applies the
+	// per-token auth strategy (url_token / bearer / basic). See
+	// docs/integrations/tigertms-ilink-protocol.md for the wire
+	// format and docs/integrations/tigertms-cloud-backend.md for
+	// the auth-strategy design.
+	s.ilink.Routes(app)
 
 	return adaptor.FiberApp(app)
 }
@@ -547,24 +562,4 @@ func (s *Server) handlePBXWebhook(c *fiber.Ctx) error {
 
 	c.Status(fiber.StatusOK)
 	return c.SendString(`{"status":"ok"}`)
-}
-
-func (s *Server) handleTigerTMS(c *fiber.Ctx) error {
-	tenantID := c.Params("tenant")
-
-	var targetApp *fiber.App
-	for app, tid := range s.tigertmsHandlers {
-		if tid == tenantID {
-			targetApp = app
-			break
-		}
-	}
-	if targetApp == nil {
-		log.Warn().Str("tenant", tenantID).Msg("TigerTMS request for unknown tenant")
-		return c.Status(fiber.StatusNotFound).SendString("tenant not found")
-	}
-
-	adaptor.CopyContextToFiberContext(c.Context(), c.Context())
-	targetApp.Handler()(c.Context())
-	return nil
 }

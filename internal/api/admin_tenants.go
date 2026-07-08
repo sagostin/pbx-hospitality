@@ -782,9 +782,23 @@ func validatePMSConfig(cfg map[string]interface{}) error {
 	if !ok || protocol == "" {
 		return nil
 	}
-	validProtocols := map[string]bool{"mitel": true, "fias": true, "tigertms": true}
+	validProtocols := map[string]bool{
+		"mitel":          true,
+		"fias":           true,
+		"tigertms":       true, // TigerTMS iLink (Asterisk REST protocol)
+		"tigertms_ilink": true, // explicit alias for clarity
+	}
 	if !validProtocols[protocol] {
-		return &validationError{Field: "pms_config.protocol", Message: "must be one of mitel, fias, tigertms"}
+		return &validationError{Field: "pms_config.protocol", Message: "must be one of mitel, fias, tigertms, tigertms_ilink"}
+	}
+	if protocol == "tigertms" || protocol == "tigertms_ilink" {
+		siteid, _ := cfg["siteid"].(string)
+		if siteid == "" {
+			return &validationError{
+				Field:   "pms_config.siteid",
+				Message: "siteid is required for tigertms / tigertms_ilink tenants (TigerTMS iLink uses a `siteid` HTTP header for multi-tenant dispatch)",
+			}
+		}
 	}
 	return nil
 }

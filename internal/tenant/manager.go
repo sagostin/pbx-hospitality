@@ -19,7 +19,6 @@ import (
 	_ "github.com/sagostin/pbx-hospitality/internal/pbx/bicom"  // Register Bicom provider
 	_ "github.com/sagostin/pbx-hospitality/internal/pbx/zultys" // Register Zultys provider
 	"github.com/sagostin/pbx-hospitality/internal/pms"
-	"github.com/sagostin/pbx-hospitality/internal/pms/tigertms"
 )
 
 // Manager manages all tenant instances
@@ -163,6 +162,9 @@ func pmsConfigFromJSON(jsonStr string) config.PMSConfig {
 	if v, ok := m["protocol"].(string); ok {
 		cfg.Protocol = v
 	}
+	if v, ok := m["siteid"].(string); ok {
+		cfg.SiteID = v
+	}
 	if v, ok := m["host"].(string); ok {
 		cfg.Host = v
 	}
@@ -174,6 +176,27 @@ func pmsConfigFromJSON(jsonStr string) config.PMSConfig {
 	}
 	if v, ok := m["path_prefix"].(string); ok {
 		cfg.PathPrefix = v
+	}
+
+	// Outbound configuration.
+	if v, ok := m["outbound_enabled"].(bool); ok {
+		cfg.OutboundEnabled = v
+	}
+	if v, ok := m["outbound_url"].(string); ok {
+		cfg.OutboundURL = v
+	}
+	if v, ok := m["outbound_strategy"].(string); ok {
+		cfg.OutboundStrategy = v
+	}
+	if v, ok := m["outbound_secret_ref"].(string); ok {
+		cfg.OutboundSecretRef = v
+	}
+	if raw, ok := m["outbound_events"].([]interface{}); ok {
+		for _, e := range raw {
+			if s, ok := e.(string); ok {
+				cfg.OutboundEvents = append(cfg.OutboundEvents, s)
+			}
+		}
 	}
 	return cfg
 }
@@ -472,12 +495,13 @@ func (t *Tenant) Start(ctx context.Context) error {
 
 	log.Info().Str("tenant", t.ID).Msg("Starting tenant")
 
-	// Initialize PMS adapter
+	// Initialize PMS adapter. TigerTMS iLink needs no per-tenant secret
+	// at adapter construction time — auth is via the HTTP siteid header
+	// which the API layer resolves against the tenant. AdapterOption is
+	// reserved for future per-tenant config.
 	var adapterOpts []pms.AdapterOption
-	if t.cfg.PMS.Protocol == "tigertms" && t.cfg.PMS.AuthToken != "" {
-		adapterOpts = append(adapterOpts, tigertms.WithAuthToken(t.cfg.PMS.AuthToken))
-	}
-	adapter, err := pms.NewAdapter(t.cfg.PMS.Protocol, t.cfg.PMS.Host, t.cfg.PMS.Port, adapterOpts...)
+	_ = adapterOpts
+	adapter, err := pms.NewAdapter(t.cfg.PMS.Protocol, t.cfg.PMS.Host, t.cfg.PMS.Port)
 	if err != nil {
 		log.Error().Err(err).Str("tenant", t.ID).Msg("Failed to create PMS adapter")
 		return err
@@ -829,59 +853,120 @@ func (t *Tenant) handleCheckOut(ctx context.Context, ext string, evt pms.Event, 
 // The wake-up TIME comes from event metadata under one of these keys,
 // in order of preference:
 //
+//   - "wakeup_time_full" — TigerTMS iLink full datetime
+//     ("dd-mm-yyyy hh:mm:ss" per the iLink Asterisk REST PDF).
+//     Parsed via parseWakeUpTimeFull and accepted as an absolute
+//     timestamp (no roll-forward needed — the time is already in the
+//     past or future).
 //   - "TI"          — FIAS protocol field (HHMM)
-//   - "wakeup_time" — TigerTMS handler
+//   - "wakeup_time" — legacy TigerTMS HH:MM field
 //   - "TI_RAW"      — escape hatch for adapters that want to bypass
 //     normalization (e.g. HH:MM with the colon intact)
 //
-// The PBX is informed via pbx.Provider.ScheduleWakeUpCall. For Bicom, this
-// toggles the operator-set wake-up state on the extension via the REST API
-// (the API has no time parameter — the actual ring-at-HH:MM is performed
-// by the WakeUpScheduler via ARI Originate). For Zultys, this returns
-// ErrWakeUpNotSupported and the call is surfaced as an error metric.
+// The event Status field carries whether this is a set (true) or
+// clear (false) action. iLink also sets `wakeup_action` ∈ {set, clear,
+// clearall}; clearall cancels every pending wake-up for the extension
+// regardless of scheduled time.
+//
+// For "set" actions, the PBX is informed via pbx.Provider.ScheduleWakeUpCall
+// (Bicom REST state toggle — the API has no time parameter; the actual
+// ring-at-HH:MM is performed by the WakeUpScheduler via ARI Originate).
+// For "clear" and "clearall" actions, pbx.Provider.CancelWakeUpCall
+// is invoked and pending wakeup_calls rows are transitioned to
+// cancelled.
 func (t *Tenant) handleWakeUp(ctx context.Context, ext string, evt pms.Event, log zerolog.Logger) {
-	wakeTimeStr := firstNonEmpty(evt.Metadata["TI"], evt.Metadata["wakeup_time"], evt.Metadata["TI_RAW"])
-	if wakeTimeStr == "" {
-		log.Warn().Msg("Wake-up call requested but no time specified")
-		metrics.PMSEventErrors.WithLabelValues(t.ID, "WakeUp", "no_time").Inc()
-		return
+	action := evt.Metadata["wakeup_action"]
+	if action == "" {
+		// Derive from Status for adapters that don't tag the action.
+		if evt.Status {
+			action = "set"
+		} else {
+			action = "clear"
+		}
 	}
 
-	wakeTime, err := t.parseWakeUpTime(wakeTimeStr)
+	wakeTimeStr := firstNonEmpty(evt.Metadata["wakeup_time_full"], evt.Metadata["TI"], evt.Metadata["wakeup_time"], evt.Metadata["TI_RAW"])
+
+	var wakeTime time.Time
+	var err error
+	switch {
+	case evt.Metadata["wakeup_time_full"] != "" && action != "clearall":
+		wakeTime, err = t.parseWakeUpTimeFull(evt.Metadata["wakeup_time_full"])
+	case wakeTimeStr != "" && action != "clearall":
+		wakeTime, err = t.parseWakeUpTime(wakeTimeStr)
+	default:
+		// clearall, or set/clear with no time — no time parsing needed.
+		wakeTime = time.Time{}
+		err = nil
+	}
+
 	if err != nil {
 		log.Error().Err(err).Str("time", wakeTimeStr).Msg("Failed to parse wake-up time")
 		metrics.PMSEventErrors.WithLabelValues(t.ID, "WakeUp", "parse_time").Inc()
 		return
 	}
 
-	if err := t.pbxProvider.ScheduleWakeUpCall(ctx, ext, wakeTime); err != nil {
-		log.Error().Err(err).Str("time", wakeTime.Format("15:04")).Msg("Failed to schedule wake-up call")
-		metrics.PMSEventErrors.WithLabelValues(t.ID, "WakeUp", "pbx_provider").Inc()
-		return
-	}
-
-	// Persist the scheduled time so the WakeUpScheduler can fire the
-	// actual ring via ARI Originate at HH:MM. The PBX REST API has
-	// already accepted the state-toggle; the scheduler handles the
-	// actual call placement.
-	if t.database != nil {
-		if _, err := t.database.CreateWakeUpCall(ctx, &db.WakeUpCall{
-			TenantID:    t.ID,
-			Extension:   ext,
-			ScheduledAt: wakeTime,
-			Status:      db.WakeUpStatusPending,
-			Metadata:    fmt.Sprintf(`{"source":"%s"}`, evt.Type.String()),
-		}); err != nil {
-			// Non-fatal — the wake-up state is already on the PBX;
-			// the scheduler just won't auto-originate.
-			log.Warn().Err(err).Msg("Failed to persist wake-up call for ARI originate")
+	switch action {
+	case "set":
+		if err := t.pbxProvider.ScheduleWakeUpCall(ctx, ext, wakeTime); err != nil {
+			log.Error().Err(err).Str("time", wakeTime.Format("15:04")).Msg("Failed to schedule wake-up call")
+			metrics.PMSEventErrors.WithLabelValues(t.ID, "WakeUp", "pbx_provider").Inc()
+			return
 		}
-	}
+		if t.database != nil {
+			if _, err := t.database.CreateWakeUpCall(ctx, &db.WakeUpCall{
+				TenantID:    t.ID,
+				Extension:   ext,
+				ScheduledAt: wakeTime,
+				Status:      db.WakeUpStatusPending,
+				Metadata:    fmt.Sprintf(`{"source":"%s","wakeup_action":"set"}`, evt.Type.String()),
+			}); err != nil {
+				// Non-fatal — the wake-up state is already on the PBX;
+				// the scheduler just won't auto-originate.
+				log.Warn().Err(err).Msg("Failed to persist wake-up call for ARI originate")
+			}
+		}
+		log.Info().
+			Str("action", "set").
+			Str("time", wakeTime.Format("15:04")).
+			Str("timezone", t.timezone.String()).
+			Msg("Wake-up call scheduled")
 
-	log.Info().
-		Str("time", wakeTime.Format("15:04")).
-		Str("timezone", t.timezone.String()).
-		Msg("Wake-up call scheduled")
+	case "clear":
+		if err := t.pbxProvider.CancelWakeUpCall(ctx, ext); err != nil {
+			log.Debug().Err(err).Msg("Failed to cancel wake-up call (may not exist)")
+		}
+		if t.database != nil && wakeTimeStr != "" {
+			if w, err := t.database.FindPendingWakeUpCall(ctx, t.ID, ext); err != nil {
+				log.Warn().Err(err).Msg("Failed to look up pending wake-up call for clear")
+			} else if w != nil {
+				if err := t.database.CancelWakeUpCall(ctx, w.ID); err != nil {
+					log.Warn().Err(err).Int64("wakeup_id", w.ID).Msg("Failed to cancel pending wake-up call")
+				}
+			}
+		}
+		log.Info().
+			Str("action", "clear").
+			Str("time", wakeTimeStr).
+			Msg("Wake-up call cancelled")
+
+	case "clearall":
+		if err := t.pbxProvider.CancelWakeUpCall(ctx, ext); err != nil {
+			log.Debug().Err(err).Msg("Failed to cancel wake-up call on clearall")
+		}
+		if t.database != nil {
+			n, err := t.database.CancelAllPendingWakeUpCallsForExtension(ctx, t.ID, ext)
+			if err != nil {
+				log.Warn().Err(err).Msg("Failed to cancel all pending wake-up calls for extension")
+			} else {
+				log.Info().Int64("cancelled", n).Msg("Cancelled all pending wake-up calls for extension")
+			}
+		}
+		log.Info().Str("action", "clearall").Msg("Wake-up call clearall")
+
+	default:
+		log.Warn().Str("action", action).Msg("Unknown wake-up action; treating as set")
+	}
 }
 
 // firstNonEmpty returns the first non-empty string from the given list.
@@ -931,6 +1016,32 @@ func (t *Tenant) parseWakeUpTimeAt(timeStr string, now time.Time) (time.Time, er
 	}
 
 	return wakeTime, nil
+}
+
+// parseWakeUpTimeFull parses an absolute wake-up timestamp as sent by
+// TigerTMS iLink (per the Asterisk REST PDF: "dd-mm-yyyy hh:mm:ss").
+// Also accepts ISO-8601 ("2006-01-02T15:04:05") for forward-compat.
+// Returns the time converted to the tenant's timezone.
+func (t *Tenant) parseWakeUpTimeFull(s string) (time.Time, error) {
+	if s == "" {
+		return time.Time{}, fmt.Errorf("empty wake-up time")
+	}
+	layouts := []string{
+		"02-01-2006 15:04:05", // iLink Asterisk REST PDF: dd-mm-yyyy hh:mm:ss
+		"02-01-2006 15:04",    // no seconds
+		"2006-01-02T15:04:05", // ISO-8601
+		"2006-01-02 15:04:05",
+		"2006-01-02 15:04",
+	}
+	var lastErr error
+	for _, layout := range layouts {
+		if parsed, err := time.ParseInLocation(layout, s, t.timezone); err == nil {
+			return parsed, nil
+		} else {
+			lastErr = err
+		}
+	}
+	return time.Time{}, fmt.Errorf("unparseable wake-up time %q: %w", s, lastErr)
 }
 
 // PBXProvider returns the tenant's PBX provider for webhook handling

@@ -78,6 +78,13 @@ func (db *DB) Close() {
 	}
 }
 
+// NewDBFromGorm wraps an existing *gorm.DB in the *DB type without
+// opening a new connection. Used by tests with sqlite in-memory and
+// by callers that already have a configured gorm.DB.
+func NewDBFromGorm(g *gorm.DB) *DB {
+	return &DB{DB: g}
+}
+
 func (db *DB) Pool() *gorm.DB {
 	return db.DB
 }
@@ -266,6 +273,81 @@ func (SiteBicomMapping) TableName() string {
 	return "site_bicom_mappings"
 }
 
+// Auth strategies supported for tenant inbound endpoints.
+// URL token is the long-random secret embedded in the URL path; bearer
+// and basic are header-based alternatives layered on top.
+const (
+	InboundAuthURLToken = "url_token"
+	InboundAuthBearer   = "bearer"
+	InboundAuthBasic    = "basic"
+)
+
+// TenantInboundToken is a per-tenant authentication credential for
+// inbound PMS HTTP endpoints. The TokenHash is SHA-256 of the plaintext
+// token (which is never stored). URL-token strategy uses the long
+// secret embedded in the URL path; bearer/basic add an Authorization
+// header check on top.
+//
+// Multiple tokens per tenant are supported (multi-channel, rotation,
+// per-source).
+type TenantInboundToken struct {
+	ID           int64      `gorm:"primaryKey;autoIncrement"`
+	TenantID     string     `gorm:"column:tenant_id;size:64;not null;uniqueIndex:idx_inbound_tokens_tenant_hash"`
+	TokenHash    string     `gorm:"column:token_hash;size:128;not null"`
+	AuthStrategy string     `gorm:"column:auth_strategy;size:16;not null;default:'url_token'"`
+	BearerHash   string     `gorm:"column:bearer_hash;size:128"` // SHA-256 of bearer secret (only for auth_strategy='bearer')
+	BasicUser    string     `gorm:"column:basic_user;size:64"`   // only for auth_strategy='basic'
+	BasicHash    string     `gorm:"column:basic_hash;size:128"`  // SHA-256 of basic password
+	Enabled      bool       `gorm:"default:true;index:idx_inbound_tokens_enabled"`
+	LastUsedAt   *time.Time `gorm:"column:last_used_at"`
+	CreatedAt    time.Time  `gorm:"not null;default:NOW()"`
+	UpdatedAt    time.Time
+}
+
+func (TenantInboundToken) TableName() string { return "tenant_inbound_tokens" }
+
+// Outbound webhook delivery status values.
+const (
+	OutboundStatusQueued  = "queued"
+	OutboundStatusSending = "sending"
+	OutboundStatusSent    = "sent"
+	OutboundStatusFailed  = "failed"
+	OutboundStatusDropped = "dropped"
+)
+
+// Outbound target strategies. ilink_cdr is the only TigerTMS-specific
+// one today; future strategies include cloud_hmac, cloud_bearer, etc.
+const (
+	OutboundStrategyILinkCDR = "ilink_cdr"
+)
+
+// OutboundWebhook is a durable outbound delivery record. Producers
+// enqueue; the dispatcher worker pool picks rows whose
+// next_attempt_at <= NOW(), POSTs to target_url with the strategy's
+// signing, and updates the row based on the receiver's response.
+//
+// Idempotency: (tenant_id, event_type, idempotency_key) is unique so
+// double-produces are silently deduped — the dispatcher is at-least-once
+// at the HTTP layer but exactly-once at the table layer.
+type OutboundWebhook struct {
+	ID             int64      `gorm:"primaryKey;autoIncrement"`
+	TenantID       string     `gorm:"column:tenant_id;size:64;not null;index:idx_outbound_webhooks_tenant"`
+	EventType      string     `gorm:"column:event_type;size:32;not null"`
+	IdempotencyKey string     `gorm:"column:idempotency_key;size:128;not null;uniqueIndex:idx_outbound_webhooks_idem"`
+	TargetURL      string     `gorm:"column:target_url;size:512;not null"`
+	TargetStrategy string     `gorm:"column:target_strategy;size:32;not null;default:'ilink_cdr'"`
+	Payload        string     `gorm:"column:payload;type:jsonb;not null;default:'{}'"`
+	Status         string     `gorm:"column:status;size:16;not null;default:'queued';index:idx_outbound_webhooks_status_due"`
+	AttemptCount   int        `gorm:"column:attempt_count;default:0"`
+	LastError      string     `gorm:"column:last_error;type:text"`
+	NextAttemptAt  time.Time  `gorm:"column:next_attempt_at;not null;default:NOW();index:idx_outbound_webhooks_status_due"`
+	DeliveredAt    *time.Time `gorm:"column:delivered_at"`
+	CreatedAt      time.Time  `gorm:"not null;default:NOW()"`
+	UpdatedAt      time.Time
+}
+
+func (OutboundWebhook) TableName() string { return "outbound_webhooks" }
+
 func AutoMigrate(db *DB) error {
 	return db.DB.AutoMigrate(
 		&Site{},
@@ -276,6 +358,8 @@ func AutoMigrate(db *DB) error {
 		&GuestSession{},
 		&PMSEvent{},
 		&WakeUpCall{},
+		&TenantInboundToken{},
+		&OutboundWebhook{},
 	)
 }
 
@@ -895,4 +979,242 @@ func (db *DB) FindPendingWakeUpCall(ctx context.Context, tenantID, extension str
 		return nil, fmt.Errorf("querying pending wake-up: %w", err)
 	}
 	return &w, nil
+}
+
+// CancelAllPendingWakeUpCallsForExtension transitions every pending
+// (or already-originated, awaiting completion) wake-up row for a
+// (tenant, extension) pair to "cancelled". Returns the number of rows
+// affected.
+//
+// Used by the iLink `setwakeup action=clearall` flow which cancels all
+// scheduled wake-ups for an extension regardless of their scheduled
+// time.
+func (db *DB) CancelAllPendingWakeUpCallsForExtension(ctx context.Context, tenantID, extension string) (int64, error) {
+	now := time.Now()
+	res := db.DB.WithContext(ctx).Exec(`
+		UPDATE wakeup_calls
+		SET status = ?, completed_at = ?
+		WHERE tenant_id = ? AND extension = ? AND status IN (?, ?)
+	`, WakeUpStatusCancelled, now, tenantID, extension, WakeUpStatusPending, WakeUpStatusOriginated)
+	if res.Error != nil {
+		return 0, fmt.Errorf("cancelling pending wake-ups: %w", res.Error)
+	}
+	return res.RowsAffected, nil
+}
+
+// =============================================================================
+// Tenant inbound tokens
+// =============================================================================
+
+// CreateTenantInboundToken inserts a new token row. TokenHash /
+// BearerHash / BasicHash are SHA-256 hex of the corresponding secrets —
+// plaintext is never persisted.
+func (db *DB) CreateTenantInboundToken(ctx context.Context, t *TenantInboundToken) error {
+	if t.CreatedAt.IsZero() {
+		t.CreatedAt = time.Now()
+	}
+	t.UpdatedAt = time.Now()
+	return db.DB.WithContext(ctx).Create(t).Error
+}
+
+// LookupTenantInboundTokenByHash finds the enabled token row whose
+// TokenHash matches. Returns nil + nil if not found. Bumps LastUsedAt
+// asynchronously on a hit (best-effort, non-blocking semantics).
+func (db *DB) LookupTenantInboundTokenByHash(ctx context.Context, tokenHash string) (*TenantInboundToken, error) {
+	var t TenantInboundToken
+	err := db.DB.WithContext(ctx).
+		Where("token_hash = ? AND enabled = true", tokenHash).
+		First(&t).Error
+	if err != nil {
+		if err == gorm.ErrRecordNotFound {
+			return nil, nil
+		}
+		return nil, fmt.Errorf("looking up token: %w", err)
+	}
+	// Bump last_used_at fire-and-forget — don't fail the request if this fails.
+	now := time.Now()
+	_ = db.DB.WithContext(ctx).
+		Model(&TenantInboundToken{}).
+		Where("id = ?", t.ID).
+		Update("last_used_at", &now).Error
+	return &t, nil
+}
+
+// ListTenantInboundTokens returns all tokens for a tenant (admin view;
+// never returns hashes).
+func (db *DB) ListTenantInboundTokens(ctx context.Context, tenantID string) ([]TenantInboundToken, error) {
+	var out []TenantInboundToken
+	if err := db.DB.WithContext(ctx).
+		Where("tenant_id = ?", tenantID).
+		Order("created_at desc").
+		Find(&out).Error; err != nil {
+		return nil, fmt.Errorf("listing tenant tokens: %w", err)
+	}
+	return out, nil
+}
+
+// DisableTenantInboundToken revokes a token by id. Used by the admin
+// DELETE endpoint.
+func (db *DB) DisableTenantInboundToken(ctx context.Context, tenantID string, id int64) error {
+	return db.DB.WithContext(ctx).
+		Model(&TenantInboundToken{}).
+		Where("id = ? AND tenant_id = ?", id, tenantID).
+		Updates(map[string]interface{}{"enabled": false, "updated_at": time.Now()}).Error
+}
+
+// =============================================================================
+// Outbound webhooks
+// =============================================================================
+
+// EnqueueOutboundWebhook inserts a new outbound row. Returns the row's
+// id. The (tenant_id, event_type, idempotency_key) unique index silently
+// dedupes double-produces — re-enqueueing the same idempotency key is a
+// no-op and returns the existing row's id.
+func (db *DB) EnqueueOutboundWebhook(ctx context.Context, w *OutboundWebhook) (int64, error) {
+	if w.CreatedAt.IsZero() {
+		w.CreatedAt = time.Now()
+	}
+	w.UpdatedAt = time.Now()
+	if w.Status == "" {
+		w.Status = OutboundStatusQueued
+	}
+	if w.NextAttemptAt.IsZero() {
+		w.NextAttemptAt = time.Now()
+	}
+
+	// Idempotent insert: try to fetch existing row first.
+	var existing OutboundWebhook
+	err := db.DB.WithContext(ctx).
+		Where("tenant_id = ? AND event_type = ? AND idempotency_key = ?",
+			w.TenantID, w.EventType, w.IdempotencyKey).
+		First(&existing).Error
+	if err == nil {
+		return existing.ID, nil
+	}
+	if err != gorm.ErrRecordNotFound {
+		return 0, fmt.Errorf("checking idempotency: %w", err)
+	}
+
+	if err := db.DB.WithContext(ctx).Create(w).Error; err != nil {
+		return 0, fmt.Errorf("enqueueing outbound: %w", err)
+	}
+	return w.ID, nil
+}
+
+// ClaimDueOutboundWebhooks atomically claims up to `limit` rows whose
+// status is queued/failed and whose next_attempt_at is due. The
+// returned rows are transitioned to "sending" so concurrent workers
+// don't double-deliver.
+func (db *DB) ClaimDueOutboundWebhooks(ctx context.Context, now time.Time, limit int) ([]OutboundWebhook, error) {
+	if limit <= 0 {
+		limit = 25
+	}
+	var ids []int64
+	if err := db.DB.WithContext(ctx).
+		Model(&OutboundWebhook{}).
+		Where("status IN (?, ?) AND next_attempt_at <= ?",
+			OutboundStatusQueued, OutboundStatusFailed, now).
+		Order("next_attempt_at asc").
+		Limit(limit).
+		Pluck("id", &ids).Error; err != nil {
+		return nil, fmt.Errorf("plucking due ids: %w", err)
+	}
+	if len(ids) == 0 {
+		return nil, nil
+	}
+
+	if err := db.DB.WithContext(ctx).
+		Model(&OutboundWebhook{}).
+		Where("id IN ?", ids).
+		Updates(map[string]interface{}{"status": OutboundStatusSending, "updated_at": now}).Error; err != nil {
+		return nil, fmt.Errorf("claiming due rows: %w", err)
+	}
+
+	var rows []OutboundWebhook
+	if err := db.DB.WithContext(ctx).
+		Where("id IN ?", ids).
+		Find(&rows).Error; err != nil {
+		return nil, fmt.Errorf("loading claimed rows: %w", err)
+	}
+	return rows, nil
+}
+
+// MarkOutboundSent transitions a row to "sent" and stamps delivered_at.
+func (db *DB) MarkOutboundSent(ctx context.Context, id int64) error {
+	now := time.Now()
+	return db.DB.WithContext(ctx).
+		Model(&OutboundWebhook{}).
+		Where("id = ?", id).
+		Updates(map[string]interface{}{
+			"status":       OutboundStatusSent,
+			"delivered_at": &now,
+			"last_error":   "",
+			"updated_at":   now,
+		}).Error
+}
+
+// MarkOutboundFailed increments attempt_count, records the error, and
+// schedules the next retry. If attempt_count >= maxAttempts the row is
+// moved to "dropped" instead of "failed" (terminal).
+func (db *DB) MarkOutboundFailed(ctx context.Context, id int64, errMsg string, nextAttemptAt time.Time, maxAttempts int) error {
+	now := time.Now()
+	// First bump the attempt_count, then check the value to decide terminal.
+	res := db.DB.WithContext(ctx).Exec(`
+		UPDATE outbound_webhooks
+		SET status = ?, last_error = ?, attempt_count = attempt_count + 1,
+		    next_attempt_at = ?, updated_at = ?
+		WHERE id = ?
+	`, OutboundStatusFailed, errMsg, nextAttemptAt, now, id)
+	if res.Error != nil {
+		return fmt.Errorf("marking outbound failed: %w", res.Error)
+	}
+	if res.RowsAffected == 0 {
+		return nil
+	}
+
+	var w OutboundWebhook
+	if err := db.DB.WithContext(ctx).First(&w, id).Error; err != nil {
+		return err
+	}
+	if w.AttemptCount >= maxAttempts {
+		return db.DB.WithContext(ctx).
+			Model(&OutboundWebhook{}).
+			Where("id = ?", id).
+			Updates(map[string]interface{}{
+				"status":     OutboundStatusDropped,
+				"updated_at": time.Now(),
+			}).Error
+	}
+	return nil
+}
+
+// MarkOutbackQueued pushes a row back to queued (used when a transient
+// error requires another retry beyond the standard schedule).
+func (db *DB) MarkOutboundQueued(ctx context.Context, id int64, nextAttemptAt time.Time, lastError string) error {
+	return db.DB.WithContext(ctx).
+		Model(&OutboundWebhook{}).
+		Where("id = ?", id).
+		Updates(map[string]interface{}{
+			"status":          OutboundStatusQueued,
+			"last_error":      lastError,
+			"next_attempt_at": nextAttemptAt,
+			"updated_at":      time.Now(),
+		}).Error
+}
+
+// ListOutboundWebhooksForTenant returns recent outbound rows for the
+// admin UI.
+func (db *DB) ListOutboundWebhooksForTenant(ctx context.Context, tenantID string, limit int) ([]OutboundWebhook, error) {
+	if limit <= 0 {
+		limit = 50
+	}
+	var out []OutboundWebhook
+	if err := db.DB.WithContext(ctx).
+		Where("tenant_id = ?", tenantID).
+		Order("created_at desc").
+		Limit(limit).
+		Find(&out).Error; err != nil {
+		return nil, fmt.Errorf("listing tenant outbounds: %w", err)
+	}
+	return out, nil
 }

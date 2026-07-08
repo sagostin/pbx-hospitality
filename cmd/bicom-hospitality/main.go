@@ -17,6 +17,7 @@ import (
 	"github.com/sagostin/pbx-hospitality/internal/crypto"
 	"github.com/sagostin/pbx-hospitality/internal/db"
 	"github.com/sagostin/pbx-hospitality/internal/logging"
+	"github.com/sagostin/pbx-hospitality/internal/outbound"
 	"github.com/sagostin/pbx-hospitality/internal/pbx"
 	"github.com/sagostin/pbx-hospitality/internal/tenant"
 	"github.com/sagostin/pbx-hospitality/internal/wakeup"
@@ -113,6 +114,17 @@ func main() {
 		wakeUpScheduler.Start(ctx)
 	}
 
+	// Start the outbound webhook dispatcher when a database is
+	// available. The dispatcher drains outbound_webhooks and POSTs
+	// to per-tenant endpoints (CDR push back to iLink, cloud HMAC
+	// pushes, etc.). See docs/integrations/tigertms-cloud-backend.md
+	// §6 for the architecture.
+	var outboundDispatcher *outbound.Dispatcher
+	if database != nil {
+		outboundDispatcher = outbound.NewDispatcher(database, nil)
+		outboundDispatcher.Start(ctx)
+	}
+
 	// Initialize HTTP API
 	var router http.Handler
 	if database != nil {
@@ -156,6 +168,12 @@ func main() {
 	// during teardown.
 	if wakeUpScheduler != nil {
 		wakeUpScheduler.Stop()
+	}
+
+	// Stop the outbound dispatcher before tenants so we don't
+	// enqueue new rows during teardown.
+	if outboundDispatcher != nil {
+		outboundDispatcher.Stop()
 	}
 
 	// Stop all tenants

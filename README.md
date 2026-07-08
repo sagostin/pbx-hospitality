@@ -34,7 +34,7 @@ Both are built from this repo and share the protocol adapter layer.
 |----------|---------|------------------------|--------|
 | **Mitel SX-200** | `pms/mitel` | `pms/listener/mitel_server` | ✅ Implemented |
 | **FIAS/Fidelio** | `pms/fias` | `pms/listener/fias_server` | ✅ Implemented |
-| **TigerTMS iLink** | `pms/tigertms` (HTTP webhook) | n/a | ✅ Implemented |
+| **TigerTMS iLink** | `pms/tigertms` (HTTP push) | n/a | ✅ Implemented — URL-token auth + `bearer`/`basic` layered strategies |
 
 ### Features
 
@@ -266,6 +266,7 @@ curl -H "X-Admin-Key: $KEY" http://localhost:8080/admin/tenants/{id}/wakeups
 | `/admin/sites` | CRUD + per-site bicom-system mapping |
 | `/admin/bicom-systems` | CRUD + `/{id}/ari-secret` rotation |
 | `/admin/pbx` | `GET /status`, `POST /reload`, `POST /{id}/reload` |
+| `/admin/tenants/{id}/tokens` | `POST` (create), `GET` (list), `DELETE /{tokenId}` (revoke) — per-tenant inbound auth tokens |
 
 `GET /admin/tenants/{id}/capabilities` returns runtime PMS/PBX capability flags — use it to detect misconfigurations like a Zultys tenant receiving PMS wake-up events.
 
@@ -273,7 +274,7 @@ curl -H "X-Admin-Key: $KEY" http://localhost:8080/admin/tenants/{id}/wakeups
 
 | Method | Endpoint | Description |
 |--------|----------|-------------|
-| POST | `/tigertms/{tenant}/API/*` | TigerTMS inbound (mounted per-tenant on startup) |
+| POST | `/api/v1/pms/inbound/<token>/API/*` | TigerTMS iLink inbound (URL-token auth, see [docs/integrations/tigertms-ilink-protocol.md](docs/integrations/tigertms-ilink-protocol.md)) |
 | GET  | `/ws/logs` | WebSocket log tail (auth via `SERVICE_NAME`) |
 
 Full reference: [`docs/api-reference.md`](docs/api-reference.md) and
@@ -335,12 +336,17 @@ root. They DO require a working network stack (loopback).
 - [Protocols](docs/protocols.md) — PMS protocol specifications
 - [Future Considerations](docs/future-considerations.md) — Roadmap
 
+### Integrations
+
+- [TigerTMS iLink Protocol](docs/integrations/tigertms-ilink-protocol.md) — verified wire format from the included PDFs (supersedes the TigerTMS sections of `tigertms.md` / `protocols.md`)
+- [TigerTMS Cloud Backend](docs/integrations/tigertms-cloud-backend.md) — target architecture, gap analysis, schema additions, tier plan for the TigerTMS cloud + Bicom + Event Publisher integration
+
 ### API & Reference
 
 - [API Reference](docs/api-reference.md) — Public REST API
 - [Admin API](docs/admin-api.md) — `/admin/*` endpoints
 - [Bicom API](docs/bicom-api.md) — Bicom PBXware API details
-- [TigerTMS Integration](docs/tigertms.md) — TigerTMS REST adapter
+- [TigerTMS Integration](docs/tigertms.md) — TigerTMS REST adapter (overview + Tier 0/1 wake-up history; protocol details superseded)
 
 ### Resources
 

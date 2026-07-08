@@ -8,6 +8,7 @@ import (
 	"net/http"
 	"net/url"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/rs/zerolog/log"
@@ -624,4 +625,132 @@ func (c *Client) ListServicePlans(ctx context.Context) ([]ServicePlan, error) {
 	}
 
 	return plans, nil
+}
+
+// CDRRecord represents a single Asterisk CDR row as exposed by Bicom's
+// `pbxware.cdr.list` (or equivalent) endpoint. Field names mirror the
+// Asterisk CDR spec used in the TigerTMS iLink CDR PDF so the same
+// payload shape can be relayed downstream without renaming.
+//
+// The actual Bicom CDR action name and exact response shape should be
+// confirmed against the Bicom API docs at integration time — the
+// poller translates whatever shape comes back into this struct.
+type CDRRecord struct {
+	UniqueID    string `json:"uniqueid,omitempty"`
+	AccountCode string `json:"accountcode,omitempty"`
+	Src         string `json:"src,omitempty"`
+	Dst         string `json:"dst,omitempty"`
+	DContext    string `json:"dcontext,omitempty"`
+	CLID        string `json:"clid,omitempty"`
+	Channel     string `json:"channel,omitempty"`
+	DstChannel  string `json:"dstchannel,omitempty"`
+	LastApp     string `json:"lastapp,omitempty"`
+	LastData    string `json:"lastdata,omitempty"`
+	Start       string `json:"start,omitempty"`
+	Answer      string `json:"answer,omitempty"`
+	End         string `json:"end,omitempty"`
+	Duration    string `json:"duration,omitempty"`
+	BillSec     string `json:"billsec,omitempty"`
+	Disposition string `json:"disposition,omitempty"`
+	AMAFlags    string `json:"amaflags,omitempty"`
+}
+
+// CDRPoller periodically polls the Bicom CDR endpoint and forwards new
+// records to a sink function. The sink is responsible for relaying
+// each record to its destination (iLink outbound dispatcher, Bicom
+// Event Publisher pipeline, etc.).
+//
+// Watermarking: we keep a per-tenant `last_seen_end` timestamp so we
+// only emit records whose `end` field is later than the watermark.
+// The watermark is in-memory only — restart resumes from
+// `sinceTime` (default = now-1h).
+type CDRPoller struct {
+	client    *Client
+	sinceTime time.Time
+	interval  time.Duration
+	tenantID  string
+
+	mu          sync.Mutex
+	lastSeenEnd time.Time
+}
+
+// NewCDRPoller creates a poller that runs against the given Bicom
+// client. The poller emits CDR records that ended strictly after
+// `since`. Pass since=time.Now().Add(-time.Hour) to start with a
+// one-hour backfill.
+func NewCDRPoller(client *Client, tenantID string, since time.Time, interval time.Duration) *CDRPoller {
+	return &CDRPoller{
+		client:      client,
+		tenantID:    tenantID,
+		sinceTime:   since,
+		interval:    interval,
+		lastSeenEnd: since,
+	}
+}
+
+// Run blocks until ctx is done, polling every interval. The sink
+// receives every CDRRecord the poller fetches.
+func (p *CDRPoller) Run(ctx context.Context, sink func(ctx context.Context, tenantID string, rec CDRRecord) error) {
+	t := time.NewTicker(p.interval)
+	defer t.Stop()
+	for {
+		select {
+		case <-ctx.Done():
+			return
+		case <-t.C:
+			if err := p.pollOnce(ctx, sink); err != nil {
+				log.Warn().Err(err).Str("tenant", p.tenantID).Msg("CDR poll failed")
+			}
+		}
+	}
+}
+
+// pollOnce fetches the new CDRs since the last watermark. Bicom's
+// CDR list endpoint is `pbxware.cdr.list` with a `starttime` filter.
+// The exact parameter names should be confirmed at integration
+// time; we send `starttime=<unix-ts>` and expect JSON rows back.
+func (p *CDRPoller) pollOnce(ctx context.Context, sink func(ctx context.Context, tenantID string, rec CDRRecord) error) error {
+	p.mu.Lock()
+	start := p.lastSeenEnd
+	p.mu.Unlock()
+
+	resp, err := p.client.doRequest(ctx, "pbxware.cdr.list", map[string]string{
+		"starttime": fmt.Sprintf("%d", start.Unix()),
+	})
+	if err != nil {
+		return fmt.Errorf("bicom cdr list: %w", err)
+	}
+
+	var records []CDRRecord
+	if len(resp.Data) > 0 {
+		if err := json.Unmarshal(resp.Data, &records); err != nil {
+			return fmt.Errorf("decode cdr list: %w", err)
+		}
+	}
+
+	var newestEnd time.Time
+	for _, rec := range records {
+		// Parse the end timestamp (Bicom uses "YYYY-MM-DD HH:MM:SS")
+		var recEnd time.Time
+		if rec.End != "" {
+			if t, err := time.Parse("2006-01-02 15:04:05", rec.End); err == nil {
+				recEnd = t
+			}
+		}
+		if !recEnd.IsZero() && (newestEnd.IsZero() || recEnd.After(newestEnd)) {
+			newestEnd = recEnd
+		}
+		if err := sink(ctx, p.tenantID, rec); err != nil {
+			log.Warn().Err(err).Str("tenant", p.tenantID).Str("uniqueid", rec.UniqueID).Msg("cdr sink failed")
+		}
+	}
+
+	if !newestEnd.IsZero() {
+		p.mu.Lock()
+		if p.lastSeenEnd.Before(newestEnd) {
+			p.lastSeenEnd = newestEnd
+		}
+		p.mu.Unlock()
+	}
+	return nil
 }

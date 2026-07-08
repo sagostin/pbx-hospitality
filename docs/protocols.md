@@ -19,8 +19,8 @@ flowchart LR
         S_MITEL["listener.MitelListener<br/>listen on 0.0.0.0 port 23"]
     end
 
-    subgraph Push["HTTP push - middleware POSTs to us"]
-        T_TIGER["tigertms.Handler<br/>POST /tigertms/{tenant}/API/*"]
+subgraph Push["HTTP push - iLink middleware POSTs to us"]
+        T_TIGER["tigertms.Handler<br/>POST /api/v1/pms/inbound/<token>/API/*<br/>token-hash + bearer/basic auth"]
     end
 
     PMS["PMS / Middleware"]
@@ -170,15 +170,33 @@ tenant manager parses `0700` as 07:00 in the tenant timezone and:
 
 ## TigerTMS iLink REST API
 
-TigerTMS iLink is middleware that translates between PMS systems and PBX via HTTP REST API.
+TigerTMS iLink is middleware that translates between PMS systems and
+PBX via HTTP REST API.
 
-### Transport
+> **⚠️ The field-level summary below describes a generic TigerTMS
+> push shape that does **not** match the actual iLink protocol.** The
+> verified wire format — `siteid` HTTP header (not bearer), JSON
+> body (not form-encoded), `extn` field (not `room`), full datetime
+> wake-up, `clearall` action, etc. — is in
+> [`integrations/tigertms-ilink-protocol.md`](integrations/tigertms-ilink-protocol.md),
+> extracted from `docs/tigertms/TigerTMS_AsteriskRestAPI.pdf` and
+> `docs/tigertms/TigerTMS_AsteriskPostCDRRestAPI.pdf`.
+>
+> The architecture, gap analysis, and tier plan for the TigerTMS
+> cloud-backend + Bicom integration is in
+> [`integrations/tigertms-cloud-backend.md`](integrations/tigertms-cloud-backend.md).
+>
+> Note also that **`/API/CDR` is outbound from us, not inbound** —
+> the PDFs document the "Asterisk → TigerTMS" direction. Our current
+> inbound CDR handler is incorrect for the real protocol.
+
+### Transport (intended — to be corrected)
 
 - HTTP/HTTPS REST API
 - TigerTMS pushes to our endpoints
 - Query parameters or JSON body format
 
-### Endpoints
+### Endpoints (superseded — see [integrations/tigertms-ilink-protocol.md](integrations/tigertms-ilink-protocol.md))
 
 | Endpoint | Description | Implemented | Notes |
 |----------|-------------|-------------|-------|

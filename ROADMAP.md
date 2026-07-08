@@ -128,6 +128,15 @@ Status legend:
       `tenant.Manager` (manages per-tenant PBX config from the JSONB
       column) load from different DB tables. Reconcile into a single
       source of truth.
+      **Resolution path:** introduce
+      `bicom_system_ari_credentials` table (one BicomSystem row can
+      host multiple ARI credentials, each scoped to one or more
+      tenants). `tenant.Manager` resolves "what Bicom systems should
+      this tenant route to?" via the existing `sites` +
+      `site_bicom_mappings` failover layer, then picks an ARI
+      credential per system. See
+      [`docs/integrations/tigertms-cloud-backend.md` §4](docs/integrations/tigertms-cloud-backend.md#pbx-connection-shape-per-bicom-system-with-tenant-scoping)
+      and Tier G in §6.
 
 - [TODO] Decide on dead-code lifecycle for `internal/websocket/bridge.go`
       (legacy cloud-WS bridge), `internal/ari/client.go` (alternate ARI
@@ -152,16 +161,61 @@ Status legend:
 |---|---|---|
 | FIAS (Oracle) | ✅ | connect + listen modes |
 | Mitel SX-200 | ✅ connect; ⚠️ wake-up parsing missing `WAK` | Tier 2 |
-| TigerTMS iLink | ✅ Tier 0 wake-up fix; ⚠️ COS / DDI events lost | Tier 2 |
+| TigerTMS iLink | ✅ Tier 0 wake-up fix; ✅ **Tier C — iLink rewrite to match PDF spec** (siteid header, JSON body, extn, dd-mm-yyyy wakeuptime, clearall, on/off strings, `{"result":"success","information":"..."}` response shape; inbound `/API/CDR` removed — CDR is outbound) | See [`docs/integrations/tigertms-ilink-protocol.md`](docs/integrations/tigertms-ilink-protocol.md) |
 | ASIP | 📋 planned | reuses FIAS parser; Tier 3 |
 | Mews | 📋 planned | REST push; Tier 3 |
 | Cloudbeds | 📋 planned | REST push; Tier 3 |
 
 ## 6. Outbound Webhooks (hospitality → PMS)
 
-- [TODO] Tier 4 — `outbound_webhooks` table + dispatcher + admin CRUD +
-      signed delivery + exp-backoff retry. See architecture mermaid in
-      `docs/architecture.md`.
+- [TODO] **Tier 0 (elevated from Tier 4 for the TigerTMS tenant class).**
+      The TigerTMS cloud-backend + Bicom integration requires us to push
+      events back out (CDR, wake-up outcomes, voicemail-left, access-code
+      dials). See
+      [`docs/integrations/tigertms-cloud-backend.md`](docs/integrations/tigertms-cloud-backend.md)
+      §11 for the tier plan and status.
+
+      - [ ] **Tier A** — `POST /events/{bicom_event_publisher_token}`
+            receiver, token→tenant lookup, lifecycle coalesce, `cdr_records`
+            table. Pure Bicom-side, no TigerTMS dependency.
+      - [x] **Tier B** — `outbound_webhooks` table + dispatcher worker +
+            signing + retry + idempotency. Pluggable auth strategy
+            (bearer / HMAC / URL-token). **`internal/outbound` package,
+            `internal/outbound/outboundtest` fake store, 6 unit tests.**
+      - [x] **Tier C** — TigerTMS iLink inbound. URL-token-based auth with
+            pluggable strategies (`url_token` / `bearer` / `basic`); JSON
+            body, `extn` field, `dd-mm-yyyy hh:mm:ss` wake-up format,
+            `clearall` action, `on`/`off` strings, iLink-shaped response.
+            Token lifecycle via admin API
+            (`/admin/tenants/{id}/tokens`). **Rewritten handler in
+            `internal/pms/tigertms/`, 12 unit tests, DB-backed resolver in
+            `internal/api/token_resolver.go`.**
+      - [ ] **Tier D** — TigerTMS cloud inbound + outbound. Per-tenant
+            outbound URL + auth strategy + events_to_emit wired through
+            `internal/router`. CDR producer wired through Tier J.
+      - [ ] **Tier E** — Wake-up reconciler. Periodic
+            `pbxware.ext.es.opwakeupcall.get` snapshot + Event Publisher
+            wake-up event handler + divergence alert.
+      - [ ] **Tier F** — Access-code dial detection + outbound. ARI
+            `StasisStart` extractor upgrade; admin CRUD for access-code
+            → event-type mapping.
+      - [ ] **Tier G** — Multi-bicom ARI credentials table
+            (`bicom_system_ari_credentials`); reconcile with
+            `tenant.Manager` JSONB config (see §3 below).
+      - [x] **Tier H** — ~~Remove inbound `/API/CDR` handler (CDR is outbound
+            per the iLink PDF).~~ **DONE** as part of Tier C.
+      - [x] **Tier I** — Dynamic event router. Per-tenant pipeline
+            composition (`internal/router`) — swap tenants between
+            providers via config change, no code change. **3 unit tests.**
+      - [ ] **Tier J** — CDR poller. `internal/bicom.CDRPoller` polls
+            `pbxware.cdr.list` and emits CDR-shaped events to the
+            router. Poller implemented; wiring into the per-tenant
+            router pipeline is a small follow-on (depends on A for
+            Bicom Event Publisher path; for iLink tenant CDR the
+            poller suffices).
+
+- [TODO] Tier 4 — for tenants that are **not** TigerTMS, outbound webhooks
+      are still Tier 4. See architecture mermaid in `docs/architecture.md`.
 
 ## 5. Test Coverage
 
@@ -174,7 +228,7 @@ Current coverage by package (per `make test`):
 | `pms/fias` | ~80% | parser-heavy; well covered |
 | `pms/listener` | ~74% | mitel + fias integration + race |
 | `pms/mitel` | ~31% | parser only |
-| `pms/tigertms` | ~18% | adapter thin; HTTP handler untested |
+| `pms/tigertms` | ~18% → **~75%** | iLink handler with all 3 auth strategies + wakeup clearall + JSON body. Tests in `internal/pms/tigertms/tigertms_test.go`. |
 | `tenant` | 0% → ~25% (new mapper tests) | PMS-side wired but not asserted |
 | `websocket` | ~34% | bridge code is legacy; logsink has tests |
 
@@ -203,6 +257,15 @@ Backlog:
       step, added a boot-stack mermaid graph, added an ER diagram.
 - [DONE] `docs/api-reference.md` — added `POST /sessions`, `DELETE /sessions`,
       TigerTMS inbound, `/ws/logs`, and admin-route quick reference.
+- [DONE] `docs/integrations/tigertms-ilink-protocol.md` —
+      verified wire-format spec extracted from
+      `docs/tigertms/TigerTMS_AsteriskRestAPI.pdf` and
+      `docs/tigertms/TigerTMS_AsteriskPostCDRRestAPI.pdf`. Used as the
+      reference for the Tier C handler rewrite.
+- [DONE] `docs/integrations/tigertms-cloud-backend.md` —
+      target architecture, gap analysis, schema additions, and
+      tier-by-tier implementation plan for the TigerTMS cloud
+      backend + Bicom + Event Publisher integration.
 - [TODO] Reconcile `docs/future-considerations.md` with what's actually
       been done; close the gaps that this roadmap covers.
 
@@ -216,10 +279,40 @@ Backlog:
    endpoint, regression tests.
 3. ✅ **Tier 1 — WakeUpScheduler + ARI originate (this PR).** Closes
    the wake-up pipeline on Bicom. Zultys loud-fails.
-4. **Tier 2 — TigerTMS round-out + Mitel WAK.** COS / DDI / reservation_id
-   handling; add WAK to Mitel parser.
-5. Reconcile `pbx.Manager` ↔ `tenant.Manager` (§3) — pick one model.
-6. Wire `pbx.CallEvent` → PMS MWI (§3) — closes the voicemail→lamp loop.
-7. Tier 3 — ASIP, Mews, Cloudbeds adapters.
-8. Tier 4 — Outbound webhook delivery.
-9. Fold `site-connector` into the main binary.
+4. ✅ **Tier B — Outbound dispatcher core** (this PR).
+   `internal/outbound` package — `outbound_webhooks` table + worker
+   pool + signing (bearer/HMAC/URL-token) + retry/backoff +
+   idempotency + pluggable strategies.
+5. ✅ **Tier C — TigerTMS iLink inbound rewrite** (this PR). URL-token
+   auth with `url_token` / `bearer` / `basic` strategies; JSON body;
+   `extn` field; `dd-mm-yyyy hh:mm:ss` wake-up; `clearall` action;
+   `on`/`off` strings; iLink-shaped response. Inbound `/API/CDR`
+   removed. Token lifecycle via admin API.
+6. ✅ **Tier I — Dynamic event router** (this PR). `internal/router`
+   composes per-tenant inbound source + outbound sink so tenants
+   swap providers via config change.
+7. ✅ **Tier J — Bicom CDR poller** (this PR).
+   `internal/bicom.CDRPoller` polls `pbxware.cdr.list` and emits
+   CDR-shaped events. Poller → router wiring is a small follow-on.
+8. **Tier A — Bicom Event Publisher receiver + `cdr_records` table.**
+   Pure Bicom-side. Depends on whether vendor emits wakeup events
+   (see [open questions](docs/integrations/tigertms-cloud-backend.md#open-questions--unresolved-gaps)).
+9. **Tier D — TigerTMS cloud inbound + outbound** (small follow-on to
+   Tier B + C). Wire CDR + wake-up outcomes to `cloud_outbound_url`
+   per tenant through the router.
+10. **Tier E — Wake-up reconciler** (Bicom REST snapshot + Event
+    Publisher wake-up event handler + divergence alert).
+11. **Tier F — Access-code dial detection + outbound** (ARI
+    `StasisStart` extractor upgrade + admin CRUD for access-code →
+    event-type mapping).
+12. **Tier G — Multi-bicom ARI credentials** (`bicom_system_ari_credentials`
+    table; reconcile `tenant.Manager` JSONB config — see §3).
+13. ~~Tier H — Remove inbound `/API/CDR` handler~~ — done as part of Tier C.
+14. **Tier 2 (re-scoped) — TigerTMS COS / DDI / BYOD consumers +
+    Mitel WAK.** The previously Tier 2 list expands: COS, DDI,
+    `sippassword` (BYOD) need PBX-side consumers.
+15. Reconcile `pbx.Manager` ↔ `tenant.Manager` (§3) — handled by Tier G.
+16. Wire `pbx.CallEvent` → PMS MWI (§3) — closes the voicemail→lamp loop.
+17. Tier 3 — ASIP, Mews, Cloudbeds adapters.
+18. Tier 4 — Outbound webhook delivery for non-TigerTMS tenants.
+19. Fold `site-connector` into the main binary.

@@ -327,16 +327,26 @@ See [PBX Providers Guide](pbx-providers.md) for provider-specific details.
 
 ## Inbound PMS Endpoints
 
-### TigerTMS
+### TigerTMS iLink
 
 ```http
-POST /tigertms/{tenant}/API/*
+POST /api/v1/pms/inbound/<token>/API/<endpoint>
+Content-Type: text/json
 ```
 
-Mounted dynamically at startup for every tenant whose `pms.protocol` is
-`tigertms`. The `{tenant}` path segment must match an existing tenant ID.
+Single mount, multi-tenant dispatch via a long random secret in the
+URL path. The token identifies AND authenticates the tenant.
+Optional layered auth via `Authorization: Bearer <secret>` or
+`Authorization: Basic <user:pass>` headers is configured per token
+via the admin API.
 
-See [tigertms.md](tigertms.md) for the full set of supported endpoints.
+Tokens are managed via:
+- `POST /admin/tenants/{id}/tokens` — create (returns plaintext once)
+- `GET /admin/tenants/{id}/tokens` — list (no secrets)
+- `DELETE /admin/tenants/{id}/tokens/{tokenId}` — disable (revoke)
+
+See [integrations/tigertms-ilink-protocol.md](integrations/tigertms-ilink-protocol.md)
+for the full set of supported endpoints and the exact wire format.
 
 ---
 

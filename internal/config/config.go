@@ -66,13 +66,30 @@ type TenantConfig struct {
 	Settings   TenantSettings `yaml:"settings"`
 }
 
-// PMSConfig holds PMS connection settings
+// PMSConfig holds PMS connection settings.
+//
+// For TigerTMS iLink tenants (protocol "tigertms" or "tigertms_ilink"),
+// the multi-tenant discriminator is the SiteID value sent in the
+// `siteid` HTTP header by iLink. Host/Port/AuthToken are not used —
+// iLink pushes to us.
 type PMSConfig struct {
 	Protocol   string `yaml:"protocol"`
+	SiteID     string `yaml:"siteid"` // TigerTMS iLink siteid header value
 	Host       string `yaml:"host"`
 	Port       int    `yaml:"port"`
-	AuthToken  string `yaml:"auth_token"`
+	AuthToken  string `yaml:"auth_token"` // deprecated: legacy TigerTMS bearer; not used for iLink
 	PathPrefix string `yaml:"path_prefix"`
+
+	// Outbound configuration: where PBX-side events (CDR, wake-up
+	// outcomes, MWI, etc.) get pushed back to the PMS / middleware.
+	// Per-tenant outbound endpoint config (with its own auth) lives
+	// on tenants.pms_config; this block is for tenant-level settings
+	// shared across all outbound producers.
+	OutboundEnabled   bool     `yaml:"outbound_enabled"`    // master switch per tenant
+	OutboundURL       string   `yaml:"outbound_url"`        // base URL; strategy-specific path appended
+	OutboundStrategy  string   `yaml:"outbound_strategy"`   // 'ilink_cdr' | 'cloud_hmac' | 'cloud_bearer'
+	OutboundEvents    []string `yaml:"outbound_events"`     // events to emit: cdr_posted, wakeup_completed, ...
+	OutboundSecretRef string   `yaml:"outbound_secret_ref"` // FK into encrypted_secrets
 }
 
 // PBXConfig holds PBX connection settings

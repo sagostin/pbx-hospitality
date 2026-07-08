@@ -29,6 +29,62 @@ func TestFirstNonEmpty(t *testing.T) {
 	}
 }
 
+// TestParseWakeUpTimeFull covers the TigerTMS iLink full-datetime
+// format ("dd-mm-yyyy hh:mm:ss") per the Asterisk REST PDF, plus a
+// couple of forward-compat layouts.
+func TestParseWakeUpTimeFull(t *testing.T) {
+	zone := time.UTC
+	ten := &Tenant{timezone: zone}
+
+	cases := []struct {
+		name string
+		in   string
+		want time.Time
+	}{
+		{
+			name: "iLink dd-mm-yyyy hh:mm:ss",
+			in:   "24-08-2017 08:00:00",
+			want: time.Date(2017, 8, 24, 8, 0, 0, 0, zone),
+		},
+		{
+			name: "iLink dd-mm-yyyy hh:mm (no seconds)",
+			in:   "24-08-2017 08:00",
+			want: time.Date(2017, 8, 24, 8, 0, 0, 0, zone),
+		},
+		{
+			name: "ISO-8601 with T separator",
+			in:   "2026-08-24T08:00:00",
+			want: time.Date(2026, 8, 24, 8, 0, 0, 0, zone),
+		},
+		{
+			name: "ISO-8601 with space",
+			in:   "2026-08-24 08:00:00",
+			want: time.Date(2026, 8, 24, 8, 0, 0, 0, zone),
+		},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			got, err := ten.parseWakeUpTimeFull(tc.in)
+			if err != nil {
+				t.Fatalf("parseWakeUpTimeFull(%q): %v", tc.in, err)
+			}
+			if !got.Equal(tc.want) {
+				t.Errorf("parseWakeUpTimeFull(%q) = %v, want %v", tc.in, got, tc.want)
+			}
+		})
+	}
+}
+
+func TestParseWakeUpTimeFull_RejectsGarbage(t *testing.T) {
+	zone := time.UTC
+	ten := &Tenant{timezone: zone}
+	for _, in := range []string{"", "not-a-date", "24/08/2017 08:00", "garbage"} {
+		if _, err := ten.parseWakeUpTimeFull(in); err == nil {
+			t.Errorf("parseWakeUpTimeFull(%q) succeeded, want error", in)
+		}
+	}
+}
+
 // TestParseWakeUpTime covers the normalization of wake-up time strings
 // across the three metadata key shapes we accept:
 //
